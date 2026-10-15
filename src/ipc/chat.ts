@@ -806,8 +806,10 @@ export function chatSetEffort(sessionId: string, effort?: string): Promise<void>
 }
 
 /** Models offered by this session's installed agent and account. */
-export function chatModels(sessionId: string): Promise<ChatModel[]> {
-  return invoke("chat_models", { sessionId });
+export async function chatModels(sessionId: string): Promise<ChatModel[]> {
+  const models = await invoke<(Omit<ChatModel, "description"> & { description?: string | null })[]>("chat_models", { sessionId });
+  // 原生说明可省略，旧后端会序列化为 null；在 IPC 边界恢复界面约定，避免模型菜单拖垮整个窗口。
+  return models.map(model => ({ ...model, description: model.description ?? "" }));
 }
 
 /** Read the whole conversation; snapshot image bytes stay deferred until their individual views mount. */

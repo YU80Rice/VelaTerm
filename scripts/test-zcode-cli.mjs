@@ -8,6 +8,7 @@ import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { checkZcodeBrowser } from './zcode-browser-smoke.mjs';
 
 if (process.platform !== 'win32') throw Error('此回归脚本验证 Windows 成品；协议单测支持其他平台。');
 const exe = process.env.VELATERM_TEST_EXE;
@@ -44,7 +45,7 @@ const modelServer = createServer(async (request, response) => {
       chunk({}, 'tool_calls'); response.end('data: [DONE]\n\n'); return;
     }
   }
-  const textResult = text.includes('ALPHA') ? 'ALPHA_RESULT' : text.includes('BETA') ? 'BETA_RESULT' : 'FIXTURE_RESULT';
+  const textResult = text.includes('UI_RENDER_TEST') ? 'UI_RENDER_OK' : text.includes('ALPHA') ? 'ALPHA_RESULT' : text.includes('BETA') ? 'BETA_RESULT' : 'FIXTURE_RESULT';
   chunk({ role: 'assistant', content: textResult.slice(0, 5) });
   chunk({ content: textResult.slice(5) });
   chunk({}, 'stop'); response.end('data: [DONE]\n\n');
@@ -118,7 +119,9 @@ try {
   assert(answers[1].rows.some(row => row.kind === 'assistant' && row.text === 'BETA_RESULT'));
   const before = (await call('list_tree')).sessions.find(session => session.id === alpha).agentSessionId;
   assert(before?.startsWith('sess_'));
-  assert(JSON.stringify(await call('chat_models', { sessionId: alpha })).includes('local-fixture/gpt-4o'));
+  const catalogue = await call('chat_models', { sessionId: alpha });
+  assert(JSON.stringify(catalogue).includes('local-fixture/gpt-4o'));
+  assert(catalogue.every(model => typeof model.description === 'string'), '模型目录的说明必须为字符串，避免聊天界面 startsWith 崩溃');
   for (const mode of ['plan', 'edit', 'yolo', 'build']) await call('chat_set_mode', { sessionId: alpha, mode });
   await call('chat_set_effort', { sessionId: alpha, effort: 'disabled' });
   await call('chat_set_effort', { sessionId: alpha, effort: null });
@@ -168,7 +171,9 @@ try {
   await delay(500);
   await call('chat_interrupt', { sessionId: beta });
   await until(() => call('chat_snapshot', { sessionId: beta }), snapshot => !snapshot.turnStartedAt, '原生中断');
-  const result = { appVersion: expectedVersion, nativeConcurrentSessions: true, nativeResume: true, offlineHistory: true, permissionDenial: true, permissionReannouncement: true, pendingInteractionCancellation: true, writeToolAndArguments: true, planApproval: true, interrupt: true, zcodeGuiUsed: false, productionAccountAuthorization: false };
+  const tree = await call('list_tree');
+  const browserUI = await checkZcodeBrowser({ base, token, sessionName: tree.sessions.find(session => session.id === alpha).name, root });
+  const result = { appVersion: expectedVersion, nativeConcurrentSessions: true, nativeResume: true, offlineHistory: true, permissionDenial: true, permissionReannouncement: true, pendingInteractionCancellation: true, writeToolAndArguments: true, planApproval: true, interrupt: true, browserUI, zcodeGuiUsed: false, productionAccountAuthorization: false };
   await writeFile(path.join(root, 'result.json'), JSON.stringify(result, null, 2));
   console.log(JSON.stringify({ ...result, evidence: path.join(root, 'result.json') }));
 } finally {

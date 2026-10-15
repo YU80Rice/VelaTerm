@@ -102,7 +102,8 @@ fn apply_snapshot(app: &AppCtx, session: &str, proc: &Arc<ChatProcess>, snapshot
     proc.zcode.lock().unwrap().models = settings["model"]["available"].as_array().into_iter().flatten()
         .filter(|item| item["disabledReason"].is_null()).filter_map(|item| {
             Some(json!({"id":format!("{}/{}",item["ref"]["providerId"].as_str()?,item["ref"]["modelId"].as_str()?),
-                "label":item["label"],"description":item["description"],"effortLevels":item["reasoning"]["levels"].as_array().into_iter().flatten().filter_map(|v|v["value"].as_str()).collect::<Vec<_>>()}))
+                // 原生 description 可省略；chat_models 约定字符串，不能向模型菜单传 null。
+                "label":item["label"],"description":item["description"].as_str().unwrap_or_default(),"effortLevels":item["reasoning"]["levels"].as_array().into_iter().flatten().filter_map(|v|v["value"].as_str()).collect::<Vec<_>>()}))
         }).collect();
     for choice in settings["model"]["available"].as_array().into_iter().flatten() {
         if let (Some(provider),Some(model))=(choice["ref"]["providerId"].as_str(),choice["ref"]["modelId"].as_str()) {
@@ -474,6 +475,23 @@ mod tests {
         assert_eq!(rows.len(),1);
         assert!(matches!(&rows[0],ChatRow::Tool{name,input,output,status,..} if name=="Bash" && input["command"]=="echo CLI" && output.as_deref()==Some("CLI") && *status=="completed"));
     }
+    #[test]
+    fn native_model_catalogue_has_string_descriptions_when_optional_metadata_is_absent() {
+        let app = super::super::tests::ctx("zcode-model-description");
+        let proc = super::super::tests::inert_process(SessionKind::Zcode);
+        apply_snapshot(&app, "s", &proc, &json!({"settings":{"model":{"available":[
+            {"ref":{"providerId":"account:bigmodel","modelId":"GLM-5.3"},"label":"GLM-5.3"},
+            {"ref":{"providerId":"account:bigmodel","modelId":"GLM-5.2"},"label":"GLM-5.2","description":null},
+            {"ref":{"providerId":"account:bigmodel","modelId":"GLM-5"},"label":"GLM-5","description":"Native description"}
+        ]}}}), false);
+        let state = proc.zcode.lock().unwrap();
+        assert_eq!(state.models.len(), 3);
+        assert_eq!(state.models[0]["description"], "");
+        assert_eq!(state.models[1]["description"], "");
+        assert_eq!(state.models[2]["description"], "Native description");
+        assert_eq!(state.models[0]["id"], "account:bigmodel/GLM-5.3");
+    }
+
     #[test]
     fn native_stream_is_routed_to_its_session_and_terminal_result_finishes_turn() {
         let app=super::super::tests::ctx("zcode-protocol");

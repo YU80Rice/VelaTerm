@@ -93,6 +93,20 @@ beforeEach(() => {
 });
 afterEach(cleanup);
 
+it.each([null, undefined])("renders the Zcode catalogue when a native model has no description (%s)", async (description) => {
+  const previous = vi.mocked(invoke).getMockImplementation()!;
+  vi.mocked(invoke).mockImplementation((command, args) => command === "chat_models"
+    ? Promise.resolve([{ id: "old-model", label: "GLM-5.3", description, effortLevels: ["high"] }]) as Promise<never>
+    : previous(command, args));
+  const { container } = await mountPane("zcode");
+  expect(screen.getByRole("option", { name: "GLM-5.3" })).toBeTruthy();
+  const input = container.querySelector<HTMLTextAreaElement>(".sv-box textarea")!;
+  fireEvent.change(input, { target: { value: "ZCODE_UI_OK" } });
+  fireEvent.keyDown(input, { key: "Enter" });
+  await waitFor(() => expect(vi.mocked(invoke).mock.calls.some(([command, args]) =>
+    command === "chat_send" && args?.text === "ZCODE_UI_OK")).toBe(true));
+});
+
 it("keeps the running model visible on discovery failure and restores choices after retry", async () => {
   const previous = vi.mocked(invoke).getMockImplementation()!;
   let failModels = true;
@@ -163,7 +177,7 @@ it("replays newer events over a late snapshot without losing history or restorin
   expect(screen.getByText("New queue")).toBeTruthy();
 });
 
-async function mountPane(kind: "claude" | "codex" | "opencode" | "antigravity" = "claude", expectedModel: string | null = "old-model", mobile = false) {
+async function mountPane(kind: "claude" | "codex" | "opencode" | "antigravity" | "zcode" = "claude", expectedModel: string | null = "old-model", mobile = false) {
   const view = render(<ChatPane session={{ id: "s", projectId: "p", name: "Claude", kind, engine: "chat", collapsed: false, sortOrder: 0, createdAt: 0 }}
     area={{}} hidden={false} focused multi={false} mobile={mobile} onActivate={() => {}} onSplit={() => {}} onClose={() => {}} />);
   if (expectedModel !== null) await waitFor(() => expect((screen.getByRole("combobox", { name: "Model" }) as HTMLSelectElement).value).toBe(expectedModel));
