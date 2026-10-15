@@ -3,6 +3,19 @@
 import type en from "./en";
 
 const ko: typeof en = {
+  "chat.zcode.planLoadFailed": "Start Plan을 불러올 수 없습니다. CLI 버전을 확인하거나 다시 로그인하세요.",
+  "chat.zcode.planUnsupported": "이 CLI는 Start Plan 지원을 보고하지 않습니다.",
+  "chat.zcode.planEffective": "시작:",
+  "chat.zcode.planEnds": "만료:",
+  "chat.zcode.planRemaining": "남음:",
+  "chat.zcode.planUsed": "사용:",
+  "chat.zcode.plan.available": "사용 가능",
+  "chat.zcode.plan.pending": "활성화 대기",
+  "chat.zcode.plan.unavailable": "사용 가능한 잔량 또는 모델 없음",
+  "chat.zcode.plan.not-authenticated": "이 계정으로 로그인",
+  "chat.zcode.plan.verification-required": "공식 인증 필요",
+  "chat.zcode.plan.error": "이용 권한 조회 실패",
+
   "panel.averageOutput": "평균 출력 속도",
   "panel.averageOutputHint": "측정된 응답 시간을 기준으로 추정한 초당 출력 토큰 수입니다. 보고된 추론 토큰을 포함하며, 도구 실행 시간과 사용자 대기 시간은 제외합니다. 사용량과 측정 시간을 신뢰할 수 있게 대응시킬 수 없으면 표시하지 않습니다. 모델 자체의 디코딩 속도를 나타내는 값은 아닙니다.",
   "translation.swap": "언어 바꾸기",

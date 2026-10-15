@@ -6,6 +6,8 @@ use std::time::{Duration, Instant};
 use super::{AuthState, ChatProcess, AppCtx, emit_extras};
 
 pub(in super::super) fn run(app: &AppCtx, session: &str, proc: &Arc<ChatProcess>, login: bool, family: &str) -> Result<(),String> {
+    let start_plan = family.ends_with("-start-plan");
+    let family = family.strip_suffix("-start-plan").unwrap_or(family);
     if !matches!(family,"zai"|"bigmodel") { return Err("Zcode 登录账户应为 zai 或 bigmodel".into()); }
     if !proc.alive.load(Ordering::Relaxed) { return Err("Zcode 进程已停止，请重新打开会话".into()); }
     if super::active(proc) { return Err("Zcode 账户操作正在进行".into()); }
@@ -15,7 +17,11 @@ pub(in super::super) fn run(app: &AppCtx, session: &str, proc: &Arc<ChatProcess>
     if let Some(cwd)=&proc.cwd { cmd.current_dir(cwd); }
     super::super::agent_environment(app, session, &mut cmd);
     crate::agent::zcode_cli::prepare_environment(&mut cmd, crate::host::home_dir());
-    if login { cmd.args(["login",family,"--no-browser","--json"]); }
+    if login {
+        cmd.args(["login", family]);
+        if start_plan { cmd.arg("start-plan"); }
+        cmd.args(["--no-browser","--json"]);
+    }
     else { cmd.args(["logout","--json"]); }
     #[cfg(unix)] {use std::os::unix::process::CommandExt;cmd.process_group(0);}
     let mut child=cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().map_err(|e|format!("无法启动 Zcode 原生登录：{e}"))?;

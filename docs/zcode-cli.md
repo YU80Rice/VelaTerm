@@ -50,6 +50,22 @@ sequenceDiagram
 
 供应商配置复用规则：用户未显式设置 `ZCODE_PERSONAL_PROVIDER_CONFIG_FILE` 或 `ZCODE_DATA_BASE_DIR` 时，VelaTerm 从用户主目录的 `.zcode/v2/setting.json` 读取 GUI 的绝对路径 `dataBaseDir`；若其中已有 `.zcode/v2/provider_config.json`，仅将该路径作为 CLI 的 `ZCODE_PERSONAL_PROVIDER_CONFIG_FILE`。不得更改 HOME、USERPROFILE、CLI 会话存储或账户凭据位置，不复制 API Key，宿主不写回 GUI 配置。显式环境配置优先；GUI 设置缺失、无效或目标文件不存在时沿用 CLI 默认。聊天、登录 helper、模型发现及离线历史查询采用同一路径规则。模型菜单保留原生供应商名称作为说明，便于区分同名模型。官方账户仍由原生 CLI 登录管理，可用模型及权益以 CLI 返回为准；用户主动原生登录等操作仍可由 CLI 更新共享文件中的默认选择。供应商编辑继续在 Zcode GUI 完成，已有会话需重新启动 Zcode 进程后读取新的配置位置。
 
+## Start Plan 账户套餐
+
+账户菜单分别提供 BigModel/Z.AI 的 **Start Plan** 与个人 **Coding Plan**。Start Plan 使用 `login <family> start-plan --no-browser --json`，浏览器授权后仅保存原生账户身份，不要求兑换个人 Coding Plan 的项目令牌。GUI 登录不会自动替代 CLI 登录。
+
+打开模型菜单即可读取 `provider/readStartPlan`：CLI 返回套餐名称、生效和到期时间、可用模型、原始单位余额及已用量。待生效、未登录、无可用额度、接口错误和验证要求分别显示；点击刷新重新读取权益和模型目录，不要求先发送消息。全局账户权益不向公开分享页面开放。服务端以0表示未指定生效日期时，不显示为1970年。
+
+```text
+模型菜单 → CLI 权益查询 → 套餐状态与模型目录
+选择 Start Plan 模型 → CLI 复核账户/额度/模型白名单 → JWT 调用官方套餐端点
+失败或耗尽 → 明确拒绝，不回退个人 Coding Plan 或第三方模型
+```
+
+Start Plan 的模型调用与账单查询遵循同一 `ZCODE_ENDPOINT_ORIGIN`。官方接口若拒绝请求或要求当前独立 CLI 尚不能完成的交互验证，会明确报错；不伪造验证凭据。已有运行会话刷新时只替换模型目录，不改写历史、模式或当前选择。
+
+Windows 回归还覆盖隔离 OAuth 登录、待生效→刷新后可用、UI 选择套餐模型、JWT 回合、原始额度变化，以及耗尽后禁止其他渠道生成。夹具结果与真实账户验收分开报告；只有真实回复和官方余额查询同时成功，才称真实套餐调用已验证。
+
 ## 验证与范围
 
 空白会话在首次发送前、以及已停止进程的已有会话，仍须提供模型菜单。没有活跃 CLI 时，`chat_models` 使用该会话的可执行文件、工作目录和登录环境创建 deferred 临时目录查询；不绑定临时原生 ID，不恢复或改写已有会话，不发送模型生成请求。运行中的会话使用自己的目录；初始化未完成时返回可重试错误，不将其误报为成功的空列表，也不另起进程掩盖初始化失败。预选模型在实际启动时交给 CLI 确认。

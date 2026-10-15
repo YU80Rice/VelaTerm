@@ -3,6 +3,19 @@
 import type en from "./en";
 
 const ja: typeof en = {
+  "chat.zcode.planLoadFailed": "Start Plan を読み込めません。CLI の更新または再ログインをお試しください。",
+  "chat.zcode.planUnsupported": "この CLI は Start Plan に対応していません。",
+  "chat.zcode.planEffective": "有効：",
+  "chat.zcode.planEnds": "期限：",
+  "chat.zcode.planRemaining": "残り：",
+  "chat.zcode.planUsed": "使用済み：",
+  "chat.zcode.plan.available": "利用可能",
+  "chat.zcode.plan.pending": "有効化待ち",
+  "chat.zcode.plan.unavailable": "利用できる残量またはモデルがありません",
+  "chat.zcode.plan.not-authenticated": "このアカウントにログイン",
+  "chat.zcode.plan.verification-required": "公式の確認が必要",
+  "chat.zcode.plan.error": "権利を取得できません",
+
   "panel.averageOutput": "平均出力速度",
   "panel.averageOutputHint": "計測した応答時間から推定した、1秒あたりの出力トークン数です。報告された推論トークンを含み、ツールの実行時間とユーザーを待つ時間は除外します。使用量と計測時間を正しく対応付けられない場合は表示しません。モデル自体のデコード速度ではありません。",
   "translation.swap": "言語を入れ替え",

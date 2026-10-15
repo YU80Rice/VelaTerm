@@ -99,12 +99,7 @@ fn apply_snapshot(app: &AppCtx, session: &str, proc: &Arc<ChatProcess>, snapshot
     if let (Some(provider), Some(model)) = (current["providerId"].as_str(), current["modelId"].as_str()) {
         *proc.model.lock().unwrap() = Some(format!("{provider}/{model}"));
     }
-    proc.zcode.lock().unwrap().models = crate::agent::zcode_cli::model_entries(snapshot);
-    for choice in settings["model"]["available"].as_array().into_iter().flatten() {
-        if let (Some(provider),Some(model))=(choice["ref"]["providerId"].as_str(),choice["ref"]["modelId"].as_str()) {
-            proc.zcode.lock().unwrap().model_choices.insert(format!("{provider}/{model}"),choice.clone());
-        }
-    }
+    apply_models(proc, snapshot);
     if let Some(mode) = settings["mode"]["current"].as_str() { *proc.mode.lock().unwrap() = mode.into(); }
     *proc.effort.lock().unwrap() = settings["thoughtLevel"]["current"].as_str().map(str::to_string);
     let commands = snapshot["slashCommands"].as_array().into_iter().flatten().map(|v|json!({"name":v["name"],"description":v["description"],"invocation":"/"})).collect::<Vec<_>>();
@@ -121,6 +116,23 @@ fn apply_snapshot(app: &AppCtx, session: &str, proc: &Arc<ChatProcess>, snapshot
             }
         }
     }
+}
+
+fn apply_models(proc: &Arc<ChatProcess>, snapshot: &Value) {
+    let mut state = proc.zcode.lock().unwrap();
+    state.models = crate::agent::zcode_cli::model_entries(snapshot);
+    state.model_choices.clear();
+    for choice in snapshot["settings"]["model"]["available"].as_array().into_iter().flatten() {
+        if let (Some(provider),Some(model))=(choice["ref"]["providerId"].as_str(),choice["ref"]["modelId"].as_str()) {
+            state.model_choices.insert(format!("{provider}/{model}"),choice.clone());
+        }
+    }
+}
+
+pub(super) fn start_plan(proc: &Arc<ChatProcess>) -> Result<Value, String> {
+    let result = command(proc, "zcode_start_plan", "provider/readStartPlan", json!({}))?;
+    if result.get("settings").is_some() { apply_models(proc, &result); }
+    Ok(json!({"plans":result["plans"]}))
 }
 
 pub(super) fn dispatch(proc: &Arc<ChatProcess>, input: &str, text: &str, images: &[super::ChatImage]) -> Result<(), String> {

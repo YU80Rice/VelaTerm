@@ -95,6 +95,15 @@ pub fn session_models(app: &crate::host::AppCtx, session_id: &str, bin: &str, cw
     Ok(model_entries(&snapshot))
 }
 
+/// 套餐查询复用该会话环境，不创建或绑定原生历史。
+pub fn session_start_plan(app: &crate::host::AppCtx, session_id: &str, bin: &str, cwd: Option<&str>) -> Result<Value,String> {
+    let mut cmd = crate::host::command(bin);
+    if let Some(cwd) = cwd { cmd.current_dir(cwd); }
+    crate::agent::chat::engine::agent_environment(app, session_id, &mut cmd);
+    prepare_environment(&mut cmd, crate::host::home_dir());
+    query_command(cmd, bin, cwd, "provider/readStartPlan", json!({}))
+}
+
 /// 冷查询和运行中会话使用同一投影，保持来源名称、思考级别及字符串说明契约。
 pub fn model_entries(snapshot: &Value) -> Vec<Value> {
     snapshot["settings"]["model"]["available"].as_array().into_iter().flatten()

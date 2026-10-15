@@ -351,7 +351,8 @@ export interface ChatAuthState {
   userCode?: string;
 }
 
-export const chatAuthStart = (sessionId: string, provider?: "zai" | "bigmodel") => invoke<void>("chat_auth_start", { sessionId, provider });
+export type ZcodeLoginProvider = "zai" | "bigmodel" | "zai-start-plan" | "bigmodel-start-plan";
+export const chatAuthStart = (sessionId: string, provider?: ZcodeLoginProvider) => invoke<void>("chat_auth_start", { sessionId, provider });
 export const chatAuthLogout = (sessionId: string) => invoke<void>("chat_auth_logout", { sessionId });
 export const chatAuthSubmit = (sessionId: string, code: string) => invoke<void>("chat_auth_submit", { sessionId, code });
 export const chatAuthCancel = (sessionId: string) => invoke<void>("chat_auth_cancel", { sessionId });
@@ -811,6 +812,15 @@ export async function chatModels(sessionId: string): Promise<ChatModel[]> {
   // 原生说明可省略，旧后端会序列化为 null；在 IPC 边界恢复界面约定，避免模型菜单拖垮整个窗口。
   return models.map(model => ({ ...model, description: model.description ?? "" }));
 }
+
+export interface ZcodeStartPlan {
+  providerId: string; label: string;
+  status: "available" | "pending" | "unavailable" | "not-authenticated" | "verification-required" | "error";
+  effectiveAt?: number; message?: string; models: string[];
+  plans: { name: string; status: string; startsAt?: number; endsAt?: number; effectiveAt?: number }[];
+  balances: { name: string; unit: string; total?: number; used?: number; available?: number; endsAt?: number; models: string[] }[];
+}
+export const chatZcodeStartPlan = (sessionId: string) => invoke<{ plans: ZcodeStartPlan[] }>("chat_zcode_start_plan", { sessionId });
 
 /** Read the whole conversation; snapshot image bytes stay deferred until their individual views mount. */
 export async function chatSnapshot(sessionId: string, window?: { before?: string; from?: string; since?: number; epoch?: number }): Promise<ChatSnapshot> {

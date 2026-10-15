@@ -3,6 +3,19 @@
 import type en from "./en";
 
 const fr: typeof en = {
+  "chat.zcode.planLoadFailed": "Impossible de charger Start Plan. Vérifiez la version du CLI ou reconnectez-vous.",
+  "chat.zcode.planUnsupported": "Ce CLI ne signale pas de prise en charge de Start Plan.",
+  "chat.zcode.planEffective": "Activation :",
+  "chat.zcode.planEnds": "Expiration :",
+  "chat.zcode.planRemaining": "Restant :",
+  "chat.zcode.planUsed": "Utilisé :",
+  "chat.zcode.plan.available": "Disponible",
+  "chat.zcode.plan.pending": "En attente d’activation",
+  "chat.zcode.plan.unavailable": "Aucun quota ou modèle disponible",
+  "chat.zcode.plan.not-authenticated": "Connectez-vous à ce compte",
+  "chat.zcode.plan.verification-required": "Vérification officielle requise",
+  "chat.zcode.plan.error": "Échec de la consultation des droits",
+
   "panel.averageOutput": "débit moyen",
   "panel.averageOutputHint": "Estimation du nombre de jetons produits par seconde sur la durée de réponse mesurée, y compris les jetons de raisonnement signalés. Le temps d’exécution des outils et l’attente de l’utilisateur sont exclus. Aucune valeur n’est affichée si l’utilisation et la durée ne peuvent pas être rapprochées de manière fiable. Il ne s’agit pas de la vitesse de décodage seule du modèle.",
   "translation.swap": "Inverser les langues",

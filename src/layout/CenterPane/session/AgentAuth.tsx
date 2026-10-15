@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useT } from "../../../i18n";
-import { chatAuthCancel, chatAuthLogout, chatAuthStart, chatAuthSubmit, type ChatAuthState } from "../../../ipc/chat";
+import { chatAuthCancel, chatAuthLogout, chatAuthStart, chatAuthSubmit, type ChatAuthState, type ZcodeLoginProvider } from "../../../ipc/chat";
 import { copyText } from "../../../ipc/transport";
 import { platform } from "../../../platform";
 import Icons from "../../../components/Icons";
@@ -39,7 +39,7 @@ function AuthPanel({ provider, sessionId, state, busy }: AuthProps) {
   const [error, setError] = useState<string | null>(null);
   const [confirmLogout, setConfirmLogout] = useState(false);
   const [code, setCode] = useState("");
-  const [zcodeFamily, setZcodeFamily] = useState<"bigmodel" | "zai">("bigmodel");
+  const [zcodeFamily, setZcodeFamily] = useState<ZcodeLoginProvider>("bigmodel-start-plan");
   const active = state?.status === "starting" || state?.status === "pending" || state?.status === "submitting" || state?.status === "canceling";
   const signingOut = state?.status === "signingOut";
   const signedOut = state?.status === "signedOut";
@@ -91,8 +91,9 @@ function AuthPanel({ provider, sessionId, state, busy }: AuthProps) {
       </div>
     </form>}
     <div className="sv-auth-actions">
-      {provider === "Zcode" && !active && <select aria-label="Zcode 登录账户" value={zcodeFamily} disabled={sending || busy || signingOut} onChange={e=>setZcodeFamily(e.target.value as "zai"|"bigmodel")}>
-        <option value="bigmodel">BigModel（智谱）</option><option value="zai">Z.AI</option>
+      {provider === "Zcode" && !active && <select aria-label="Zcode 登录账户" value={zcodeFamily} disabled={sending || busy || signingOut} onChange={e=>setZcodeFamily(e.target.value as ZcodeLoginProvider)}>
+        <option value="bigmodel-start-plan">BigModel · Start Plan</option><option value="zai-start-plan">Z.AI · Start Plan</option>
+        <option value="bigmodel">BigModel · Coding Plan</option><option value="zai">Z.AI · Coding Plan</option>
       </select>}
       {active
         ? <button type="button" disabled={sending || state?.status === "submitting" || state?.status === "canceling"} onClick={() => void run(() => chatAuthCancel(sessionId))}>{t("common.cancel")}</button>

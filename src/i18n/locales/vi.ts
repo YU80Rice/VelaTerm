@@ -3,6 +3,19 @@
 import type en from "./en";
 
 const vi: typeof en = {
+  "chat.zcode.planLoadFailed": "Không thể tải Start Plan. Hãy kiểm tra phiên bản CLI hoặc đăng nhập lại.",
+  "chat.zcode.planUnsupported": "CLI này không báo cáo hỗ trợ Start Plan.",
+  "chat.zcode.planEffective": "Có hiệu lực:",
+  "chat.zcode.planEnds": "Hết hạn:",
+  "chat.zcode.planRemaining": "Còn lại:",
+  "chat.zcode.planUsed": "Đã dùng:",
+  "chat.zcode.plan.available": "Khả dụng",
+  "chat.zcode.plan.pending": "Chờ kích hoạt",
+  "chat.zcode.plan.unavailable": "Không có hạn mức hoặc mô hình khả dụng",
+  "chat.zcode.plan.not-authenticated": "Đăng nhập tài khoản này",
+  "chat.zcode.plan.verification-required": "Cần xác minh chính thức",
+  "chat.zcode.plan.error": "Không thể truy vấn quyền lợi",
+
   "panel.averageOutput": "tốc độ đầu ra trung bình",
   "panel.averageOutputHint": "Số token đầu ra mỗi giây được ước tính theo thời gian phản hồi đã đo, bao gồm token suy luận được báo cáo. Không tính thời gian thực thi công cụ và chờ người dùng. Không hiển thị giá trị nếu không thể đối chiếu chính xác lượng token đã dùng với thời gian đo. Đây không phải tốc độ giải mã thuần túy của mô hình.",
   "translation.swap": "Đổi ngôn ngữ",

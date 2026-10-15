@@ -3,6 +3,19 @@
 import type en from "./en";
 
 const de: typeof en = {
+  "chat.zcode.planLoadFailed": "Start Plan konnte nicht geladen werden. CLI-Version prüfen oder erneut anmelden.",
+  "chat.zcode.planUnsupported": "Diese CLI meldet keine Unterstützung für Start Plan.",
+  "chat.zcode.planEffective": "Aktiv ab:",
+  "chat.zcode.planEnds": "Ablauf:",
+  "chat.zcode.planRemaining": "Verbleibend:",
+  "chat.zcode.planUsed": "Verbraucht:",
+  "chat.zcode.plan.available": "Verfügbar",
+  "chat.zcode.plan.pending": "Aktivierung ausstehend",
+  "chat.zcode.plan.unavailable": "Kein nutzbares Kontingent oder Modell",
+  "chat.zcode.plan.not-authenticated": "Bei diesem Konto anmelden",
+  "chat.zcode.plan.verification-required": "Offizielle Verifizierung erforderlich",
+  "chat.zcode.plan.error": "Berechtigungen konnten nicht abgefragt werden",
+
   "panel.averageOutput": "mittlere Ausgaberate",
   "panel.averageOutputHint": "Geschätzte Anzahl der pro Sekunde ausgegebenen Tokens, berechnet aus der gemessenen Antwortzeit und einschließlich gemeldeter Reasoning-Tokens. Werkzeugausführung und Wartezeiten auf Benutzereingaben werden nicht berücksichtigt. Wenn sich Verbrauch und Zeitmessung nicht zuverlässig zuordnen lassen, wird kein Wert angezeigt. Dies ist nicht die reine Dekodiergeschwindigkeit des Modells.",
   "translation.swap": "Sprachen tauschen",

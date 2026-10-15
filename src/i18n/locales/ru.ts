@@ -13,6 +13,19 @@ function plural(n: number, one: string, few: string, many: string): string {
 }
 
 const ru: typeof en = {
+  "chat.zcode.planLoadFailed": "Не удалось загрузить Start Plan. Проверьте версию CLI или войдите снова.",
+  "chat.zcode.planUnsupported": "Этот CLI не сообщает о поддержке Start Plan.",
+  "chat.zcode.planEffective": "Активация:",
+  "chat.zcode.planEnds": "Истекает:",
+  "chat.zcode.planRemaining": "Осталось:",
+  "chat.zcode.planUsed": "Использовано:",
+  "chat.zcode.plan.available": "Доступно",
+  "chat.zcode.plan.pending": "Ожидание активации",
+  "chat.zcode.plan.unavailable": "Нет доступной квоты или моделей",
+  "chat.zcode.plan.not-authenticated": "Войдите в эту учётную запись",
+  "chat.zcode.plan.verification-required": "Требуется официальная проверка",
+  "chat.zcode.plan.error": "Не удалось проверить права",
+
   "panel.averageOutput": "средняя скорость вывода",
   "panel.averageOutputHint": "Оценка количества выходных токенов в секунду за измеренное время ответа, включая сообщённые токены рассуждений. Время выполнения инструментов и ожидания пользователя не учитывается. Значение не отображается, если данные об использовании токенов нельзя надёжно сопоставить с измеренным временем. Это не скорость декодирования самой модели.",
   "translation.swap": "Поменять языки местами",

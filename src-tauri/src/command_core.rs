@@ -1568,6 +1568,17 @@ pub fn chat_set_effort(ctx: &AppCtx, session_id: &str, effort: Option<&str>) -> 
     Ok(())
 }
 
+/// 读取该会话原生 CLI 报告的 Start Plan 权益，不暴露账户凭据。
+pub fn chat_zcode_start_plan(ctx: &AppCtx, session_id: &str) -> Result<serde_json::Value, String> {
+    let session = repo::get_session(&ctx.db().conn.lock().unwrap(), session_id)?.ok_or("Session not found")?;
+    if session.kind != SessionKind::Zcode { return Err("此会话不是 Zcode 原生 CLI".into()); }
+    if let Some(result) = ctx.chat().live_zcode_start_plan(session_id) { return result; }
+    let bin = crate::agent::executable::for_session(ctx, &session);
+    let root = repo::get_project_root(&ctx.db().conn.lock().unwrap(), &session.project_id)?;
+    let cwd = session.cwd.as_deref().filter(|value| !value.trim().is_empty()).or(root.as_deref());
+    crate::agent::zcode_cli::session_start_plan(ctx, session_id, &bin, cwd)
+}
+
 /// Models reported by the agent behind this session.
 pub fn chat_models(ctx: &AppCtx, session_id: &str) -> Result<serde_json::Value, String> {
     let session = {

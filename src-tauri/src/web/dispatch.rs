@@ -971,6 +971,7 @@ fn dispatch_inner(app: &AppCtx, cmd: &str, args: &Value, source: &str, origin: C
         "model_catalog_status" => to_value(crate::agent::remote_model_catalog::status()),
         "model_catalog_refresh" => to_value(crate::agent::remote_model_catalog::refresh(app)),
         "chat_models" => core::chat_models(app, &req_str(args, "sessionId")?),
+        "chat_zcode_start_plan" => core::chat_zcode_start_plan(app, &req_str(args, "sessionId")?),
         "chat_commands" => to_value(core::chat_commands(app, &req_str(args, "sessionId")?)?),
         "chat_snapshot" => {
             let window = args.get("window").filter(|value| !value.is_null()).map(|value| serde_json::from_value::<crate::agent::chat::engine::ChatWindow>(value.clone())).transpose().map_err(|e| e.to_string())?;

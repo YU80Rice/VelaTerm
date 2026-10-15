@@ -5,7 +5,7 @@ import { writeFile } from 'node:fs/promises';
 import net from 'node:net';
 import path from 'node:path';
 
-export async function checkZcodeBrowser({ base, token, sessionName, root, cold = false }) {
+export async function checkZcodeBrowser({ base, token, sessionName, root, cold = false, startPlanFixture }) {
   const executable = process.env.VELATERM_TEST_BROWSER;
   if (!executable) return false;
   const reserve = net.createServer();
@@ -74,6 +74,25 @@ export async function checkZcodeBrowser({ base, token, sessionName, root, cold =
     await evaluate(`(${cold}?document.querySelector('button.sv-chip'):Array.from(document.querySelectorAll('button.sv-chip')).find(n=>n.textContent.includes('gpt-4o'))).click()`);
     await until(() => evaluate(`Array.from(document.querySelectorAll('.sv-chip-box [role="option"]')).some(row=>row.textContent.includes('gpt-4o'))`), Boolean, '展开模型菜单并显示原生模型');
     assert(await evaluate(`Array.from(document.querySelectorAll('.sv-chip-box [role="option"]')).some(row=>row.textContent.includes('gpt-4o')&&row.textContent.includes('Local fixture'))`), '模型菜单应显示原生供应商名称');
+    if (startPlanFixture) {
+      await until(() => evaluate(`document.querySelector('[aria-label="Start Plan"]')?.textContent.includes('ZCode Global Build')`), Boolean, 'Start Plan 套餐名称');
+      assert(await evaluate(`/Pending|待生效/.test(document.querySelector('[aria-label="Start Plan"]').textContent)`));
+      let screenshot = await send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false });
+      await writeFile(path.join(root, 'start-plan-pending.png'), Buffer.from(screenshot.data, 'base64'));
+      startPlanFixture.activate();
+      await evaluate(`document.querySelector('[aria-label="Start Plan"] button').click()`);
+      await until(() => evaluate(`document.querySelector('[aria-label="Start Plan"]')?.textContent.includes('80')`), Boolean, '刷新后显示官方原始额度');
+      await until(() => evaluate(`Array.from(document.querySelectorAll('[role="option"]')).some(row=>row.textContent.includes('GLM-5.3-Flash')&&row.textContent.includes('Start Plan'))`), Boolean, '刷新后开放套餐模型');
+      screenshot = await send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false });
+      await writeFile(path.join(root, 'start-plan-active.png'), Buffer.from(screenshot.data, 'base64'));
+      await evaluate(`Array.from(document.querySelectorAll('[role="option"]')).find(row=>row.textContent.includes('GLM-5.3-Flash')&&row.textContent.includes('Start Plan')).click()`);
+      await evaluate(`(()=>{const input=document.querySelector('.sv-box textarea');Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set.call(input,'START_PLAN_UI');input.dispatchEvent(new Event('input',{bubbles:true}));input.focus();})()`);
+      await send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });
+      await send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });
+      await until(() => evaluate(`document.body.innerText.includes('START_PLAN_OK')`), Boolean, '通过 UI 使用套餐 JWT 完成回合');
+      assert.deepEqual(exceptions, []);
+      return true;
+    }
     if (cold) {
       assert(!await evaluate(`document.body.innerText.includes('UI_RENDER_OK')`), '空白菜单验收必须发生在首次发送之前');
       const screenshot = await send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false });

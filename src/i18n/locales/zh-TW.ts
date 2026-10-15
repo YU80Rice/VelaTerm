@@ -3,6 +3,19 @@
 import type en from "./en";
 
 const zhTW: typeof en = {
+  "chat.zcode.planLoadFailed": "Start Plan 載入失敗，請檢查 CLI 版本或重新登入。",
+  "chat.zcode.planUnsupported": "此 CLI 未回報 Start Plan 支援。",
+  "chat.zcode.planEffective": "生效：",
+  "chat.zcode.planEnds": "到期：",
+  "chat.zcode.planRemaining": "剩餘：",
+  "chat.zcode.planUsed": "已用：",
+  "chat.zcode.plan.available": "可用",
+  "chat.zcode.plan.pending": "待生效",
+  "chat.zcode.plan.unavailable": "暫無可用額度或模型",
+  "chat.zcode.plan.not-authenticated": "請登入此帳戶",
+  "chat.zcode.plan.verification-required": "需要官方驗證",
+  "chat.zcode.plan.error": "權益查詢失敗",
+
   "panel.averageOutput": "平均輸出速度",
   "panel.averageOutputHint": "依測得的回應時間估算每秒輸出的 token 數，包含智慧體回報的推理 token，不計工具執行和等待使用者的時間。用量與計時無法可靠對應時，不顯示數值。此指標並非模型的純解碼速度。",
   "translation.swap": "交換語言",

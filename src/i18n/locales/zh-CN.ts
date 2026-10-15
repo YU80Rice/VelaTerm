@@ -3,6 +3,19 @@
 import type en from "./en";
 
 const zhCN: typeof en = {
+  "chat.zcode.planLoadFailed": "Start Plan 加载失败，请检查 CLI 版本或重新登录。",
+  "chat.zcode.planUnsupported": "此 CLI 未报告 Start Plan 支持。",
+  "chat.zcode.planEffective": "生效：",
+  "chat.zcode.planEnds": "到期：",
+  "chat.zcode.planRemaining": "剩余：",
+  "chat.zcode.planUsed": "已用：",
+  "chat.zcode.plan.available": "可用",
+  "chat.zcode.plan.pending": "待生效",
+  "chat.zcode.plan.unavailable": "暂无可用额度或模型",
+  "chat.zcode.plan.not-authenticated": "请登录此账户",
+  "chat.zcode.plan.verification-required": "需要官方验证",
+  "chat.zcode.plan.error": "权益查询失败",
+
   "panel.averageOutput": "平均输出速度",
   "panel.averageOutputHint": "按测得的响应耗时估算每秒输出的 token 数，包含智能体报告的推理 token，不计工具执行和等待用户的时间。无法可靠匹配用量与计时时不显示数值。此指标并非模型的纯解码速度。",
   "translation.swap": "交换语言",

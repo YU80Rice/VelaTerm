@@ -31,6 +31,7 @@ import { StatusDot } from "../../../components/StatusDot";
 import { translationError } from "../../../translation/SettingsSection";
 import { cancelSubmissionTranslation, sendOriginalSubmission } from "./outbox";
 import { ModelCatalogStatus } from "./ModelCatalogStatus";
+import { ZcodeStartPlanStatus } from "./ZcodeStartPlanStatus";
 import { useChatModels } from "./useChatModels";
 import { StatusIndicator } from "../../../components/StatusIndicator";
 import { useT, type I18nKey } from "../../../i18n";
@@ -1992,6 +1993,7 @@ export function ChatPane({
       defaultValue={defaultModel || undefined}
       defaultLabel={t("chat.savedModelDefault")}
       footer={<>
+        {session.kind === "zcode" && !isShareSurface && <ZcodeStartPlanStatus sessionId={session.id} onRefreshed={retryModels} />}
         {(modelsLoading || modelsFailed || catalogue.length === 0) && <div className="sv-model-catalog-status">
           <div role="status">{t(modelsLoading ? "common.loading" : modelsFailed ? "chat.modelsLoadFailed" : "chat.modelsEmpty")}</div>
           {!modelsLoading && <button type="button" className="sv-model-catalog-refresh" onClick={retryModels}>{t("common.retry")}</button>}

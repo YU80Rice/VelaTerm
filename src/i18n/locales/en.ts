@@ -2,6 +2,19 @@
 //! Add new text here first, then translate it in every other dictionary; type constraints prevent omissions.
 
 const en = {
+  "chat.zcode.planLoadFailed": "Could not load Start Plan. Check the CLI version and sign in again.",
+  "chat.zcode.planUnsupported": "This CLI does not report Start Plan support.",
+  "chat.zcode.planEffective": "Effective:",
+  "chat.zcode.planEnds": "Expires:",
+  "chat.zcode.planRemaining": "Remaining:",
+  "chat.zcode.planUsed": "Used:",
+  "chat.zcode.plan.available": "Available",
+  "chat.zcode.plan.pending": "Pending activation",
+  "chat.zcode.plan.unavailable": "No usable quota or models",
+  "chat.zcode.plan.not-authenticated": "Sign in to this account",
+  "chat.zcode.plan.verification-required": "Official verification required",
+  "chat.zcode.plan.error": "Could not query entitlements",
+
   "panel.averageOutput": "average output",
   "panel.averageOutputHint": "Estimated output tokens per second over measured response time, including reported reasoning. Excludes tool execution and user waits. Unavailable when usage and timing cannot be matched reliably. This is not pure model decoding speed.",
   "translation.swap": "Swap languages",

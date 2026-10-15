@@ -27,7 +27,52 @@ const environmentLog = path.join(root, 'launch-profiles.txt');
 // 0.2.10 还会单独执行 --version；该探测不读取历史，不属于 app-server 环境比较。
 await writeFile(wrapper, '@echo off\r\nif /I "%~1"=="app-server" >> "%VELA_ZCODE_ENV_LOG%" echo("%USERPROFILE%"\r\nset "USERPROFILE=%VELA_ZCODE_TEST_PROFILE%"\r\n"%VELA_ZCODE_TEST_BINARY%" %*\r\n');
 let generationRequests = 0;
+let startPlanPhase = 'pending';
+let startPlanRequests = 0;
+let startPlanRemaining = 80;
+let unexpectedAccountRequests = 0;
 const modelServer = createServer(async (request, response) => {
+  if (request.url.startsWith('/api/v1/oauth/cli/')) {
+    for await (const _chunk of request) { /* 仅消费本地假登录请求。 */ }
+    response.writeHead(200, { 'Content-Type': 'application/json' });
+    response.end(JSON.stringify({ code: 0, data: request.url.includes('/init')
+      ? { flow_id: 'start-fixture', poll_token: 'fixture-poll', authorize_url: 'https://example.test/fixture-login', expires_at: Math.floor(Date.now() / 1000) + 120, poll_interval_sec: 1 }
+      : { status: 'ready', token: 'fixture-start-jwt', user: { user_id: 'fixture-user' }, bigmodel: { access_token: 'fixture-oauth' } } })); return;
+  }
+  if (request.url.startsWith('/api/v1/zcode-plan/billing/balance')) {
+    assert.equal(request.headers.authorization, 'Bearer fixture-start-jwt');
+    assert(request.headers['x-device-mid']);
+    assert.equal(request.headers['x-title'], 'Z Code@cli');
+    assert(request.url.includes('app_version=3.15.1'), '必须使用真实产品版本，而不是未知开发版本');
+    const now = Math.floor(Date.now() / 1000);
+    response.writeHead(200, { 'Content-Type': 'application/json', Date: new Date().toUTCString() });
+    response.end(JSON.stringify({ code: 0, data: { server_time: now,
+      plans: [{ user_plan_id: 'fixture-plan', name: 'ZCode Global Build', status: 'active', ends_at: now + 7200,
+        entitlements: [{ entitlement_id: 'fixture-entitlement', effective_at: startPlanPhase === 'pending' ? now + 3600 : now - 3600 }] }],
+      balances: startPlanPhase === 'pending' ? [] : [{ user_plan_id: 'fixture-plan', entitlement_id: 'fixture-entitlement',
+        show_name: 'GLM-5.3-Flash', capabilities: ['model:GLM-5.3-Flash'], total_units: 100,
+        used_units: 100 - startPlanRemaining, available_units: startPlanRemaining, unit_type: 'credits' }],
+    } })); return;
+  }
+  if (request.url.startsWith('/api/v1/zcode-plan/anthropic/')) {
+    startPlanRequests++;
+    const authorized = request.headers.authorization === 'Bearer fixture-start-jwt' || request.headers['x-api-key'] === 'fixture-start-jwt';
+    assert(authorized, '模型请求必须使用 Start Plan JWT');
+    for await (const _chunk of request) { /* 消费请求体，禁止记录可能含敏感信息的正文。 */ }
+    startPlanRemaining -= 5;
+    response.writeHead(200, { 'Content-Type': 'text/event-stream' });
+    const event = (type, value) => response.write(`event: ${type}\ndata: ${JSON.stringify({ type, ...value })}\n\n`);
+    event('message_start', { message: { id: 'start-plan-reply', type: 'message', role: 'assistant', model: 'GLM-5.3-Flash', content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 1, output_tokens: 0 } } });
+    event('content_block_start', { index: 0, content_block: { type: 'text', text: '' } });
+    event('content_block_delta', { index: 0, delta: { type: 'text_delta', text: 'START_PLAN_OK' } });
+    event('content_block_stop', { index: 0 });
+    event('message_delta', { delta: { stop_reason: 'end_turn', stop_sequence: null }, usage: { output_tokens: 4 } });
+    event('message_stop', {}); response.end(); return;
+  }
+  if (!request.url.startsWith('/v1/')) {
+    if (request.url.includes('token') || request.url.includes('apikey')) unexpectedAccountRequests++;
+    response.writeHead(404); response.end(); return;
+  }
   generationRequests++;
   let raw = '';
   for await (const chunk of request) raw += chunk;
@@ -65,7 +110,7 @@ const port = reservation.address().port;
 await new Promise(resolve => reservation.close(resolve));
 const password = randomUUID();
 const app = spawn(exe, ['--serve', '--local-http', '--port', String(port), '--data-dir', path.join(root, 'vela')], {
-  windowsHide: true, stdio: 'ignore', env: { ...process.env, USERPROFILE: profile, VELA_ZCODE_ENV_LOG: environmentLog, VELA_ZCODE_TEST_PROFILE: profile, VELA_ZCODE_TEST_BINARY: bin, ZCODE_DATA_BASE_DIR: nativeRoot, VELA_ISOLATED_RUNTIME: '1', VELA_SERVE_PASSWORD: password },
+  windowsHide: true, stdio: 'ignore', env: { ...process.env, USERPROFILE: profile, VELA_ZCODE_ENV_LOG: environmentLog, VELA_ZCODE_TEST_PROFILE: profile, VELA_ZCODE_TEST_BINARY: bin, ZCODE_DATA_BASE_DIR: nativeRoot, ZCODE_ENDPOINT_ORIGIN: `http://127.0.0.1:${modelServer.address().port}`, VELA_ISOLATED_RUNTIME: '1', VELA_SERVE_PASSWORD: password },
 });
 let socket;
 const sessions = [];
@@ -115,6 +160,8 @@ try {
   };
   // 空白会话尚无 CLI 进程：必须先能选择模型，不能先发送消息才能解锁菜单。
   const cold = await create(false);
+  const noLoginPlan = await call('chat_zcode_start_plan', { sessionId: cold });
+  assert(noLoginPlan.plans.length > 0 && noLoginPlan.plans.every(plan => plan.status === 'not-authenticated'), '未登录时需给出明确的 Start Plan 状态');
   const coldModels = await call('chat_models', { sessionId: cold });
   assert(coldModels.some(model => model.id === 'local-fixture/gpt-4o-mini' && model.description.includes('Local fixture')), '首次启动前模型菜单必须显示原生模型和供应商');
   assert(!(await call('list_tree')).sessions.find(session => session.id === cold).agentSessionId, '目录查询不能绑定临时原生会话');
@@ -190,7 +237,42 @@ try {
   await until(() => call('chat_snapshot', { sessionId: beta }), snapshot => !snapshot.turnStartedAt, '原生中断');
   const tree = await call('list_tree');
   const browserUI = await checkZcodeBrowser({ base, token, sessionName: tree.sessions.find(session => session.id === alpha).name, root });
-  const result = { appVersion: expectedVersion, coldModelCatalogue: true, coldModelSelection: true, stoppedModelCatalogue: true, coldBrowserUI, nativeConcurrentSessions: true, nativeResume: true, offlineHistory: true, permissionDenial: true, permissionReannouncement: true, pendingInteractionCancellation: true, writeToolAndArguments: true, planApproval: true, interrupt: true, browserUI, zcodeGuiUsed: false, productionAccountAuthorization: false };
+  const loginHelper = spawn(bin, ['login', 'bigmodel', 'start-plan', '--no-browser', '--json'], { cwd: workspace,
+    windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'], env: { ...process.env, USERPROFILE: profile,
+      ZCODE_DATA_BASE_DIR: nativeRoot, ZCODE_ENDPOINT_ORIGIN: `http://127.0.0.1:${modelServer.address().port}` } });
+  loginHelper.stdout.resume();
+  assert.equal(await new Promise((resolve, reject) => { const timer = setTimeout(() => { loginHelper.kill(); reject(Error('Start Plan 登录夹具超时')); }, 45000);
+    loginHelper.on('error', reject); loginHelper.once('exit', code => { clearTimeout(timer); resolve(code); }); }), 0, '只有 Start Plan 时也必须通过原生 CLI 登录');
+  const startPlan = await create(false);
+  const pendingPlan = await call('chat_zcode_start_plan', { sessionId: startPlan });
+  assert(pendingPlan.plans.some(plan => plan.status === 'pending' && plan.plans.some(item => item.name === 'ZCode Global Build')));
+  assert(!(await call('chat_models', { sessionId: startPlan })).some(model => model.id.includes('start-plan/')));
+  const startPlanBrowserUI = await checkZcodeBrowser({ base, token, sessionName: (await call('list_tree')).sessions.find(session => session.id === startPlan).name,
+    root, cold: true, startPlanFixture: { activate: () => { startPlanPhase = 'available'; } } });
+  startPlanPhase = 'available';
+  await call('chat_zcode_start_plan', { sessionId: startPlan });
+  const planModels = await call('chat_models', { sessionId: startPlan });
+  const planModel = 'account:bigmodel-start-plan/GLM-5.3-Flash';
+  assert(planModels.some(model => model.id === planModel && model.description.includes('Start Plan')));
+  if (!startPlanBrowserUI) {
+    await call('chat_set_model', { sessionId: startPlan, model: planModel });
+    await call('chat_start', { sessionId: startPlan, fastMode: false });
+    await until(() => call('chat_snapshot', { sessionId: startPlan }), snapshot => snapshot.model === planModel, 'Start Plan 模型就绪');
+    await call('chat_send', { sessionId: startPlan, text: 'START_PLAN_TEST' });
+    assert((await finished(startPlan)).rows.some(row => row.kind === 'assistant' && row.text === 'START_PLAN_OK'));
+  }
+  const usedPlan = await call('chat_zcode_start_plan', { sessionId: startPlan });
+  assert.equal(usedPlan.plans.find(plan => plan.providerId === 'account:bigmodel-start-plan').balances[0].available, 75);
+  assert.equal(startPlanRequests, 1); assert.equal(unexpectedAccountRequests, 0, '不能兑换个人 Coding Plan 的 Token 或 Key');
+  startPlanRemaining = 0;
+  const exhausted = await call('chat_zcode_start_plan', { sessionId: startPlan });
+  assert.equal(exhausted.plans.find(plan => plan.providerId === 'account:bigmodel-start-plan').status, 'unavailable');
+  assert(!(await call('chat_models', { sessionId: startPlan })).some(model => model.id === planModel), '额度耗尽后运行中的目录也必须移除模型');
+  const generationBeforeExhaustedSend = generationRequests;
+  await call('chat_send', { sessionId: startPlan, text: 'EXHAUSTED_START_PLAN' }).catch(() => {});
+  await delay(1500);
+  assert.equal(startPlanRequests, 1); assert.equal(generationRequests, generationBeforeExhaustedSend, '额度耗尽不能自动回退到第三方模型');
+  const result = { appVersion: expectedVersion, coldModelCatalogue: true, coldModelSelection: true, stoppedModelCatalogue: true, coldBrowserUI, nativeConcurrentSessions: true, nativeResume: true, offlineHistory: true, permissionDenial: true, permissionReannouncement: true, pendingInteractionCancellation: true, writeToolAndArguments: true, planApproval: true, interrupt: true, browserUI, startPlanBrowserUI, startPlanPending: true, startPlanJwtRequest: true, startPlanQuotaUpdated: true, startPlanNoFallback: true, zcodeGuiUsed: false, productionAccountAuthorization: false };
   await writeFile(path.join(root, 'result.json'), JSON.stringify(result, null, 2));
   console.log(JSON.stringify({ ...result, evidence: path.join(root, 'result.json') }));
 } finally {

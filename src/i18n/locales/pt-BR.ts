@@ -3,6 +3,19 @@
 import type en from "./en";
 
 const ptBR: typeof en = {
+  "chat.zcode.planLoadFailed": "Não foi possível carregar o Start Plan. Verifique a versão do CLI ou entre novamente.",
+  "chat.zcode.planUnsupported": "Este CLI não informa suporte ao Start Plan.",
+  "chat.zcode.planEffective": "Ativação:",
+  "chat.zcode.planEnds": "Expiração:",
+  "chat.zcode.planRemaining": "Restante:",
+  "chat.zcode.planUsed": "Usado:",
+  "chat.zcode.plan.available": "Disponível",
+  "chat.zcode.plan.pending": "Aguardando ativação",
+  "chat.zcode.plan.unavailable": "Sem cota ou modelos disponíveis",
+  "chat.zcode.plan.not-authenticated": "Entre nesta conta",
+  "chat.zcode.plan.verification-required": "Verificação oficial necessária",
+  "chat.zcode.plan.error": "Falha ao consultar os direitos",
+
   "panel.averageOutput": "saída média",
   "panel.averageOutputHint": "Estimativa de tokens gerados por segundo durante o tempo de resposta medido, incluindo os tokens de raciocínio informados. Exclui a execução de ferramentas e a espera pelo usuário. Nenhum valor é exibido quando não é possível associar o uso à medição de tempo de forma confiável. Não representa a velocidade de decodificação pura do modelo.",
   "translation.swap": "Trocar idiomas",
