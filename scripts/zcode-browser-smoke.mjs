@@ -73,6 +73,7 @@ export async function checkZcodeBrowser({ base, token, sessionName, root }) {
     await selectSession();
     await evaluate(`Array.from(document.querySelectorAll('button.sv-chip')).find(n=>n.textContent.includes('gpt-4o')).click()`);
     await until(() => evaluate(`Array.from(document.querySelectorAll('.sv-chip-box')).some(n=>n.querySelector('button')?.textContent.includes('gpt-4o')&&Array.from(n.querySelectorAll('[role="option"]')).some(row=>row.textContent.includes('gpt-4o')))`), Boolean, '展开模型菜单并显示原生模型');
+    assert(await evaluate(`Array.from(document.querySelectorAll('.sv-chip-box [role="option"]')).some(row=>row.textContent.includes('gpt-4o')&&row.textContent.includes('Local fixture'))`), '模型菜单应显示原生供应商名称');
     await send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
     await send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
     await evaluate(`(()=>{const input=document.querySelector('.sv-box textarea');Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set.call(input,'UI_RENDER_TEST');input.dispatchEvent(new Event('input',{bubbles:true}));input.focus();})()`);

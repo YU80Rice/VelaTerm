@@ -1531,6 +1531,9 @@ impl ChatManager {
             cmd.current_dir(cwd);
         }
         agent_environment(app, session_id, &mut cmd);
+        if kind == SessionKind::Zcode {
+            crate::agent::zcode_cli::prepare_environment(&mut cmd, crate::host::home_dir());
+        }
         if kind == SessionKind::Claude {
             // Claude disables file checkpoints outside its TUI unless this SDK-compatible switch is set.
             // Its explicit disable switch still wins, so user policy remains authoritative.

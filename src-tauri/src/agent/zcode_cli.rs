@@ -5,10 +5,35 @@ use std::sync::{Arc,Mutex,mpsc};
 use std::time::Duration;
 use serde_json::{json,Value};
 
+/// 仅共享 GUI 的 Personal Provider 文件；账户与会话继续由 CLI 的既有 profile 管理。
+pub fn prepare_environment(cmd: &mut std::process::Command, home: Option<std::path::PathBuf>) {
+    let configured = |key: &str| {
+        cmd.get_envs().find(|(name, _)| {
+            if cfg!(windows) { name.to_string_lossy().eq_ignore_ascii_case(key) } else { *name == std::ffi::OsStr::new(key) }
+        }).map(|(_, value)| value.map(std::ffi::OsStr::to_os_string))
+            .unwrap_or_else(|| std::env::var_os(key))
+            .is_some_and(|value| !value.to_string_lossy().trim().is_empty())
+    };
+    // 显式 CLI profile 必须优先，尤其不能让隔离配置读到个人 GUI 的 Key。
+    if configured("ZCODE_PERSONAL_PROVIDER_CONFIG_FILE") || configured("ZCODE_DATA_BASE_DIR") { return; }
+    let Some(home) = home else { return; };
+    let Some(settings) = std::fs::read_to_string(home.join(".zcode/v2/setting.json")).ok()
+        .and_then(|text| serde_json::from_str::<Value>(&text).ok()) else { return; };
+    let Some(base) = settings["dataBaseDir"].as_str().map(str::trim).filter(|path| !path.is_empty()) else { return; };
+    let base = std::path::Path::new(base);
+    if !base.is_absolute() { return; }
+    let personal = base.join(".zcode/v2/provider_config.json");
+    if personal.is_file() {
+        // GUI 迁移过数据目录时，默认 CLI 仍读 HOME。只复用配置路径，不迁移账户或原生历史。
+        cmd.env("ZCODE_PERSONAL_PROVIDER_CONFIG_FILE", personal);
+    }
+}
+
 pub fn query(bin: &str, cwd: Option<&str>, method: &str, params: Value) -> Result<Value,String> {
     let mut cmd=crate::host::command(bin);
     // 与会话启动统一重建登录环境，避免 USERPROFILE 等路径变量指向另一份历史库。
     crate::login_env::refresh_command(&mut cmd);
+    prepare_environment(&mut cmd, crate::host::home_dir());
     super::executable::prepare_command(&mut cmd,bin);
     cmd.args(["app-server","--stdio","--standalone"]);
     if let Some(cwd)=cwd {cmd.current_dir(cwd);}
@@ -61,4 +86,62 @@ pub fn transcript(bin: &str, cwd: Option<&str>, native: &str) -> Result<Vec<supe
         let tools=message["parts"].as_array().into_iter().flatten().filter(|p|p["type"]=="tool").filter_map(|p|p["tool"].as_str().map(str::to_string)).collect();
         super::transcript::TranscriptMessage{role:message["info"]["role"].as_str().unwrap().into(),text,timestamp:None,tools}
     }).collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn zcode_gui_providers_are_shared_without_moving_cli_login_or_history() {
+        let root = std::env::temp_dir().join(format!("vlx-zcode-profile-{}", uuid::Uuid::new_v4()));
+        let home = root.join("用户 home");
+        let desktop = root.join("GUI 数据");
+        std::fs::create_dir_all(home.join(".zcode/v2")).unwrap();
+        std::fs::create_dir_all(desktop.join(".zcode/v2")).unwrap();
+        let personal = desktop.join(".zcode/v2/provider_config.json");
+        std::fs::write(&personal, "GUI 配置应保持原样").unwrap();
+        std::fs::write(home.join(".zcode/v2/setting.json"), json!({"dataBaseDir":desktop}).to_string()).unwrap();
+        let mut cmd = crate::host::command("zcode");
+        cmd.env_remove("ZCODE_PERSONAL_PROVIDER_CONFIG_FILE").env_remove("ZCODE_DATA_BASE_DIR");
+        cmd.env("USERPROFILE", &home).env("HOME", &home).env("ZCODE_STORAGE_DIR", root.join("cli-history"));
+        prepare_environment(&mut cmd, Some(home.clone()));
+        let env: std::collections::HashMap<_, _> = cmd.get_envs().collect();
+        assert_eq!(env.get(std::ffi::OsStr::new("ZCODE_PERSONAL_PROVIDER_CONFIG_FILE")), Some(&Some(personal.as_os_str())));
+        assert_eq!(env.get(std::ffi::OsStr::new("ZCODE_DATA_BASE_DIR")), Some(&None));
+        assert_eq!(env.get(std::ffi::OsStr::new("HOME")), Some(&Some(home.as_os_str())));
+        assert_eq!(env.get(std::ffi::OsStr::new("USERPROFILE")), Some(&Some(home.as_os_str())));
+        assert_eq!(env.get(std::ffi::OsStr::new("ZCODE_STORAGE_DIR")), Some(&Some(root.join("cli-history").as_os_str())));
+        assert_eq!(std::fs::read_to_string(&personal).unwrap(), "GUI 配置应保持原样");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn zcode_explicit_cli_profile_has_priority_over_gui_discovery() {
+        for key in ["ZCODE_PERSONAL_PROVIDER_CONFIG_FILE", "ZCODE_DATA_BASE_DIR"] {
+            let mut cmd = crate::host::command("zcode");
+            cmd.env_remove("ZCODE_PERSONAL_PROVIDER_CONFIG_FILE").env_remove("ZCODE_DATA_BASE_DIR");
+            cmd.env(key, "explicit-cli-profile");
+            let before: Vec<_> = cmd.get_envs().map(|(k,v)| (k.to_os_string(),v.map(std::ffi::OsStr::to_os_string))).collect();
+            prepare_environment(&mut cmd, crate::host::home_dir());
+            let after: Vec<_> = cmd.get_envs().map(|(k,v)| (k.to_os_string(),v.map(std::ffi::OsStr::to_os_string))).collect();
+            assert_eq!(after, before, "显式配置必须完整保留，不能读取宿主 GUI 配置");
+        }
+    }
+
+    #[test]
+    fn zcode_missing_or_invalid_gui_settings_keep_cli_defaults() {
+        let home = std::env::temp_dir().join(format!("vlx-zcode-invalid-profile-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(home.join(".zcode/v2")).unwrap();
+        let file = home.join(".zcode/v2/setting.json");
+        for settings in [None, Some("bad json".to_string()), Some(json!({"dataBaseDir":42}).to_string()),
+            Some(json!({"dataBaseDir":"relative-profile"}).to_string()), Some(json!({"dataBaseDir":home.join("missing")}).to_string())] {
+            if let Some(settings) = settings { std::fs::write(&file, settings).unwrap(); }
+            let mut cmd = crate::host::command("zcode");
+            cmd.env_remove("ZCODE_PERSONAL_PROVIDER_CONFIG_FILE").env_remove("ZCODE_DATA_BASE_DIR");
+            prepare_environment(&mut cmd, Some(home.clone()));
+            assert!(cmd.get_envs().all(|(_,value)| value.is_none()), "无 GUI 配置时不得更改 CLI 环境");
+        }
+        std::fs::remove_dir_all(home).unwrap();
+    }
 }

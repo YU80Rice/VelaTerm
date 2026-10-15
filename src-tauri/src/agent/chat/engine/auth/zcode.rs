@@ -14,6 +14,7 @@ pub(in super::super) fn run(app: &AppCtx, session: &str, proc: &Arc<ChatProcess>
     crate::agent::executable::prepare_command(&mut cmd,&proc.bin);
     if let Some(cwd)=&proc.cwd { cmd.current_dir(cwd); }
     super::super::agent_environment(app, session, &mut cmd);
+    crate::agent::zcode_cli::prepare_environment(&mut cmd, crate::host::home_dir());
     if login { cmd.args(["login",family,"--no-browser","--json"]); }
     else { cmd.args(["logout","--json"]); }
     #[cfg(unix)] {use std::os::unix::process::CommandExt;cmd.process_group(0);}

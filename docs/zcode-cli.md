@@ -48,6 +48,8 @@ sequenceDiagram
 
 原生模型目录的 `description` 是可选字段；适配到 `chat_models` 时统一输出字符串，缺失或 `null` 使用空字符串，不丢弃模型。前端 IPC 同时兼容旧后端的空说明，模型选择器与聊天界面必须仍可渲染和发送消息。验证同时覆盖协议投影与真实聊天组件，不能仅以模型调用成功代替界面验收。
 
+供应商配置复用规则：用户未显式设置 `ZCODE_PERSONAL_PROVIDER_CONFIG_FILE` 或 `ZCODE_DATA_BASE_DIR` 时，VelaTerm 从用户主目录的 `.zcode/v2/setting.json` 读取 GUI 的绝对路径 `dataBaseDir`；若其中已有 `.zcode/v2/provider_config.json`，仅将该路径作为 CLI 的 `ZCODE_PERSONAL_PROVIDER_CONFIG_FILE`。不得更改 HOME、USERPROFILE、CLI 会话存储或账户凭据位置，不复制 API Key，宿主不写回 GUI 配置。显式环境配置优先；GUI 设置缺失、无效或目标文件不存在时沿用 CLI 默认。聊天、登录 helper、模型发现及离线历史查询采用同一路径规则。模型菜单保留原生供应商名称作为说明，便于区分同名模型。官方账户仍由原生 CLI 登录管理，可用模型及权益以 CLI 返回为准；用户主动原生登录等操作仍可由 CLI 更新共享文件中的默认选择。供应商编辑继续在 Zcode GUI 完成，已有会话需重新启动 Zcode 进程后读取新的配置位置。
+
 ## 验证与范围
 
 持续验证独立子智能体入口、并发隔离、模型和思考级别、权限允许及拒绝、交互回答、中断、离线历史和恢复、调度回传、异常退出及登录取消。协议回归测试应覆盖 CLI 的真实事件形状，桌面验证通过独立配置和本地模型服务隔离个人数据。
