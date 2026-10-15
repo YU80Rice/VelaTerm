@@ -7,6 +7,9 @@ import type { SessionKind } from "../types";
 export function permissionLabelKey(mode: string): I18nKey {
   if (mode === "read-only") return "chat.mode.readOnly";
   if (mode === "full-access") return "chat.mode.fullAccess";
+  if (mode === "build") return "chat.mode.default";
+  if (mode === "edit") return "chat.mode.acceptEdits";
+  if (mode === "yolo") return "chat.mode.bypassPermissions";
   return `chat.mode.${mode}` as I18nKey;
 }
 
@@ -14,7 +17,6 @@ export function AgentPermissionSelect({ kind, value, onChange }: {
   kind: SessionKind; value?: string | null; onChange: (mode: string) => void | Promise<void>;
 }) {
   const t = useT();
-  const nativeLabels: Record<string,string> = { build:"构建（逐项确认）", edit:"编辑（允许文件修改）", yolo:"自主执行" };
   const state = useAgentPermissions(kind, value);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
@@ -26,7 +28,7 @@ export function AgentPermissionSelect({ kind, value, onChange }: {
       ariaLabel={t("info.permission")}
       placeholder={state?.error ? "—" : t("common.loading")}
       disabled={busy || !state?.catalog}
-      options={state?.catalog?.modes.map(mode => ({ value: mode, label: nativeLabels[mode] ?? t(permissionLabelKey(mode)) })) ?? []}
+      options={state?.catalog?.modes.map(mode => ({ value: mode, label: t(permissionLabelKey(mode)) })) ?? []}
       onChange={mode => {
         setBusy(true); setError(undefined);
         void Promise.resolve().then(() => onChange(mode)).catch(e => setError(String(e))).finally(() => setBusy(false));

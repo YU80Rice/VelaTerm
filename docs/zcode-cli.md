@@ -32,9 +32,15 @@ sequenceDiagram
 
 事件按原生 `sessionId` 过滤，以 `seq` 去重。工具参数可能只出现在 `model.streaming/tool_call`，后续 `tool.updated/scheduled` 仅引用这份输入；不得因省略而清空已收到的参数。`accepted` 不能充当任务完成信号。工作流回执必须对应原始 `inputId`，重复终态不能重复提交结果。
 
+原生终态的 `inputId` 可以省略，必须结合原生 `turnId` 验证归属；旧回合的重复事件不能结束后来派发的回合。交互选项保留独立的 `label` 与 `value`，界面显示标签、提交原生值；自由文本不做选项值猜测。
+
 ## 账户与权限
 
 账户菜单支持 BigModel 与 Z.AI。VelaTerm 调用原生 `login <provider> --no-browser --json`，只显示授权链接和状态；账户 JSON 不写入聊天或诊断。用户在浏览器完成授权，凭据由 CLI 自己保存。成功登录后恢复同一原生会话，使进程重新装配账户状态。
+
+每次账户操作使用独立 attempt 身份。取消后允许重新登录，但旧操作的轮询、完成回调及授权 URL 都只能更新自身；不得清空新登录的进程引用或覆盖新登录状态。
+
+历史、模型短时查询和登录 helper 也使用 VelaTerm 现有的登录环境处理。不能让主 CLI 使用重建后的系统环境、查询却使用宿主启动时的旧环境，否则用户目录不同会使已存在的会话被误报为不存在。
 
 权限模式为 `plan`、`build`、`edit`、`yolo`，来源于 CLI。模式、模型与思考级别在 CLI 确认后才提交。拒绝工具应阻止其执行；停止使用 `session/stop`；停止进程后可读取原生历史，再恢复同一原生 ID。
 
@@ -43,5 +49,15 @@ sequenceDiagram
 持续验证独立子智能体入口、并发隔离、模型和思考级别、权限允许及拒绝、交互回答、中断、离线历史和恢复、调度回传、异常退出及登录取消。协议回归测试应覆盖 CLI 的真实事件形状，桌面验证通过独立配置和本地模型服务隔离个人数据。
 
 本地模型服务通过不代表生产账户授权或线上模型服务已经验证。真实账户验证必须另行记录。当前尚未支持图片附件、即时 steer、原生 fork，以及 ZCode 桌面的浏览器与 Computer Use 宿主能力；这些操作必须明确失败。
+
+Windows 成品验证脚本为 `scripts/test-zcode-cli.mjs`（Node 22+）：
+
+```powershell
+$env:VELATERM_TEST_EXE = 'C:\path\to\velaterm.exe'
+$env:ZCODE_TEST_BIN = 'C:\path\to\zcode.exe'
+node scripts/test-zcode-cli.mjs
+```
+
+脚本只启动自己创建的 `--serve --local-http --data-dir <临时目录>` 进程，结束时只终止该进程树；使用本地模型服务、临时 CLI 数据目录及测试专用 profile wrapper。wrapper 仅用于防止测试加载个人 hooks，产品仍直接执行用户配置的 CLI。脚本同时比较主 CLI 与离线查询进入 wrapper 前的用户目录，覆盖登录环境漂移导致的历史丢失回归。验证写文件和工具卡片参数、拒绝权限后没有文件写入、原生计划批准、模型与思考级别、并发、恢复和中断。临时目录保留 `result.json` 供排查，不包含个人账户凭据。
 
 本定制版仍连接官方更新服务。官方更新不会自动保留源码改动；与官方版共用数据目录时，应先备份数据，再验证升级和回退兼容性。

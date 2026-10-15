@@ -7,6 +7,8 @@ use serde_json::{json,Value};
 
 pub fn query(bin: &str, cwd: Option<&str>, method: &str, params: Value) -> Result<Value,String> {
     let mut cmd=crate::host::command(bin);
+    // 与会话启动统一重建登录环境，避免 USERPROFILE 等路径变量指向另一份历史库。
+    crate::login_env::refresh_command(&mut cmd);
     super::executable::prepare_command(&mut cmd,bin);
     cmd.args(["app-server","--stdio","--standalone"]);
     if let Some(cwd)=cwd {cmd.current_dir(cwd);}

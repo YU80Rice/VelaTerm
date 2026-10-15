@@ -12,6 +12,7 @@ pub(super) struct State {
     last_seq: Option<u64>,
     current_input: Option<String>,
     completed: HashSet<String>,
+    completed_turns: HashSet<String>,
     pub models: Vec<Value>,
     model_choices: HashMap<String,Value>,
     pub auth_child: Option<Arc<std::sync::Mutex<std::process::Child>>>,
@@ -213,7 +214,7 @@ pub(super) fn handle_line(app: &AppCtx, session: &str, proc: &Arc<ChatProcess>, 
             let key = frame["id"].as_str().map(str::to_owned).unwrap_or_else(||frame["id"].to_string());
             let mut input = params["input"].clone();
             let name = if method=="interaction/requestUserInput" {
-                input = json!({"questions":params["questions"].as_array().into_iter().flatten().map(|q|json!({"question":q["question"],"header":q["header"],"options":q["options"].as_array().into_iter().flatten().map(|o|json!({"label":o["label"],"description":o["description"]})).collect::<Vec<_>>(),"multiSelect":q["multiSelect"]==true})).collect::<Vec<_>>()});
+                input = json!({"questions":params["questions"].as_array().into_iter().flatten().map(|q|json!({"question":q["question"],"header":q["header"],"options":q["options"].as_array().into_iter().flatten().map(|o|json!({"label":o["label"],"description":o["description"],"value":o["value"]})).collect::<Vec<_>>(),"multiSelect":q["multiSelect"]==true})).collect::<Vec<_>>()});
                 "AskUserQuestion"
             } else { params["toolName"].as_str().unwrap_or("Tool") };
             let payload = json!({"id":key,"tool_name":name,"input":input,"reason":params["reason"],"nativeRequestId":frame["id"],"zcodeMethod":method,"zcodeQuestions":params["questions"]});
@@ -238,6 +239,8 @@ pub(super) fn handle_line(app: &AppCtx, session: &str, proc: &Arc<ChatProcess>, 
         Some("model.streaming") => {
             // 原生 part 事件是持久化投影；同一流只消费 model.streaming，避免双计 delta。
             let kind = payload["kind"].as_str().unwrap_or("");
+            // CLI 在流中交付完整参数后，会从 scheduled 事件省略 input；在同一卡片保留该输入。
+            if kind == "tool_call" { apply_tool(proc, payload); }
             if matches!(kind,"text_delta"|"reasoning_delta") {
                 let base = payload["partId"].as_str().or_else(||payload["assistantMessageId"].as_str()).unwrap_or("zcode-answer");
                 let id = if kind=="reasoning_delta" {format!("{base}:reasoning")}else{base.into()};
@@ -249,16 +252,32 @@ pub(super) fn handle_line(app: &AppCtx, session: &str, proc: &Arc<ChatProcess>, 
         }
         Some("part.upserted") => apply_part(proc,&payload["part"],true),
         Some("tool.updated") => apply_tool(proc,payload),
-        Some("turn.started") => { *proc.current_turn.lock().unwrap()=params["turnId"].as_str().map(str::to_string); }
+        Some("turn.started") => {
+            let turn = params["turnId"].as_str();
+            if turn.is_some_and(|id| proc.zcode.lock().unwrap().completed_turns.contains(id)) { return; }
+            *proc.current_turn.lock().unwrap()=turn.map(str::to_string);
+        }
         Some("session.updated") => {
             if let Some(snapshot) = payload.get("snapshot") { apply_snapshot(app,session,proc,snapshot,false); }
         }
         Some("turn.completed"|"turn.failed") => {
             let failed = params["type"]=="turn.failed";
-            let input = payload["inputId"].as_str().map(str::to_string).or_else(||proc.zcode.lock().unwrap().current_input.clone());
-            if let Some(ref input) = input {
-                if !proc.zcode.lock().unwrap().completed.insert(input.clone()) { return; }
-            }
+            let turn = params["turnId"].as_str();
+            let current_turn = proc.current_turn.lock().unwrap().clone();
+            // inputId 在原生终态中可省略；先验证 turn 归属，不能把旧终态归给后来派发的输入。
+            if turn.zip(current_turn.as_deref()).is_some_and(|(incoming, current)| incoming != current) { return; }
+            let input = {
+                let mut state = proc.zcode.lock().unwrap();
+                if turn.is_some_and(|id| state.completed_turns.contains(id)) { return; }
+                let input = payload["inputId"].as_str().map(str::to_string).or_else(||state.current_input.clone());
+                if input.as_ref().zip(state.current_input.as_ref()).is_some_and(|(incoming, current)| incoming != current) { return; }
+                if let Some(ref input) = input {
+                    if !state.completed.insert(input.clone()) { return; }
+                }
+                if let Some(turn) = turn { state.completed_turns.insert(turn.to_string()); }
+                state.current_input = None;
+                input
+            };
             *proc.current_turn.lock().unwrap() = None;
             let completed_rows=proc.timeline.lock().unwrap().rows.iter().filter_map(|row| {
                 let mut row=row.clone();
@@ -297,6 +316,42 @@ fn report(app: &AppCtx, session: &str, input: &str, text: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn repeated_old_terminal_cannot_finish_the_next_input() {
+        let app = super::super::tests::ctx("zcode-terminal-owner");
+        let proc = super::super::tests::inert_process(SessionKind::Zcode);
+        *proc.agent_session_id.lock().unwrap() = Some("sess-native".into());
+        let event = |seq, turn, kind: &str| json!({"method":"session/event","params":{
+            "sessionId":"sess-native", "seq":seq, "turnId":turn, "type":kind,
+            "payload":{"response":"RESULT", "resultType":"success"}
+        }}).to_string();
+        proc.turn.lock().unwrap().running = true;
+        proc.zcode.lock().unwrap().current_input = Some("input-a".into());
+        handle_line(&app,"s",&proc,&event(1,"turn-a","turn.started"));
+        handle_line(&app,"s",&proc,&event(2,"turn-a","turn.completed"));
+        assert!(!proc.turn.lock().unwrap().running);
+        // 第二次派发已拥有新的 input 与原生 turn，旧终态仍可能以新 seq 到达。
+        proc.turn.lock().unwrap().running = true;
+        proc.zcode.lock().unwrap().current_input = Some("input-b".into());
+        handle_line(&app,"s",&proc,&event(3,"turn-b","turn.started"));
+        handle_line(&app,"s",&proc,&event(4,"turn-a","turn.completed"));
+        assert!(proc.turn.lock().unwrap().running, "旧回合不能误结束下一任务");
+        assert!(!proc.zcode.lock().unwrap().completed.contains("input-b"));
+        handle_line(&app,"s",&proc,&event(5,"turn-b","turn.completed"));
+        assert!(!proc.turn.lock().unwrap().running);
+        assert!(proc.zcode.lock().unwrap().completed.contains("input-b"));
+    }
+    #[test]
+    fn native_plan_review_keeps_option_values() {
+        let app = super::super::tests::ctx("zcode-plan");
+        let proc = super::super::tests::inert_process(SessionKind::Zcode);
+        *proc.agent_session_id.lock().unwrap() = Some("sess-native".into());
+        handle_line(&app, "s", &proc, &json!({"id":"review", "method":"interaction/requestUserInput", "params":{
+            "sessionId":"sess-native", "questions":[{"header":"Plan", "question":"Review this implementation plan.", "options":[{"label":"Approve", "value":"approve"}]}]
+        }}).to_string());
+        let permissions = proc.permissions.lock().unwrap();
+        assert_eq!(permissions["review"]["input"]["questions"][0]["options"][0]["value"], "approve");
+    }
     #[test]
     fn model_selection_preserves_native_reasoning_default() {
         let choice=json!({"ref":{"providerId":"local","modelId":"coding"},"reasoning":{"defaultLevel":"medium","levels":[{"value":"medium"},{"value":"high"}]}});

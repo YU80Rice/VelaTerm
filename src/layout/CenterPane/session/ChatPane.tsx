@@ -12,6 +12,7 @@
 import { useAgentPermissions, savePermissionDefault } from "../../../hooks/useAgentPermissions";
 import { useSessionPermissionState } from "../../../hooks/useSessionPermissionState";
 import { currentPermissionLabel, PermissionStateDetails } from "../../../components/PermissionStateDetails";
+import { permissionLabelKey } from "../../../components/AgentPermissionSelect";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { measureElement, observeElementOffset, useVirtualizer } from "@tanstack/react-virtual";
 
@@ -175,15 +176,9 @@ function effortKey(kind: Session["kind"], model: string): string {
   return `${kind}:${model}`;
 }
 
-function modeLabelKey(mode: Mode): I18nKey {
-  if (mode === "read-only") return "chat.mode.readOnly";
-  if (mode === "full-access") return "chat.mode.fullAccess";
-  return `chat.mode.${mode}` as I18nKey;
-}
-
 /** OMP and Antigravity defer to their own approval settings in `default` mode. */
 function modeLabelKeyFor(kind: Session["kind"], mode: Mode): I18nKey {
-  return (kind === "omp" || kind === "antigravity") && mode === "default" ? "chat.mode.agentDefault" : modeLabelKey(mode);
+  return (kind === "omp" || kind === "antigravity") && mode === "default" ? "chat.mode.agentDefault" : permissionLabelKey(mode);
 }
 
 /** A Codex mode (`default`, `plan`) or an OpenCode agent name; the backend validates it against the catalogue. */
@@ -1897,11 +1892,10 @@ export function ChatPane({
   const permissionPending = permissionValue?.activation === "nextTurn" || permissionValue?.activation === "restart";
   const pendingMode = permissionPending ? permissionValue?.pending : null;
   const appliedMode = permissionValue?.running ? permissionValue?.current : null;
-  const zcodeModeLabels: Record<string,string> = { build:"构建（逐项确认）", edit:"编辑（允许文件修改）", yolo:"自主执行" };
-  const modeLabel = session.kind === "zcode" && zcodeModeLabels[mode] ? zcodeModeLabels[mode] : isMode(mode) ? t(modeLabelKeyFor(session.kind, mode)) : mode;
+  const modeLabel = isMode(mode) ? t(modeLabelKeyFor(session.kind, mode)) : mode;
   const modeOptions: ChipOption<string>[] = (permissionCatalog?.catalog?.modes ?? []).map((value) => ({
     value,
-    label: session.kind === "zcode" && zcodeModeLabels[value] ? zcodeModeLabels[value] : t(modeLabelKeyFor(session.kind, value)),
+    label: t(modeLabelKeyFor(session.kind, value)),
     // The effective row is noted only while it differs from the target being waited on; on its own,
     // "Applied" says nothing the chip has not already said.
     tag: pendingMode && value === pendingMode
