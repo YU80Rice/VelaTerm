@@ -92,6 +92,9 @@ mod tests {
     #[test]
     fn canceled_login_cannot_complete_a_replacement_login() {
         let app = super::super::super::tests::ctx("zcode-auth-attempt");
+        if let AppCtx::Headless(host) = &app {
+            host.set_hooks(crate::agent::server::HookServer { port: 0, token: "fixture".into() });
+        }
         let mut proc = super::super::super::tests::inert_process(crate::models::SessionKind::Zcode);
         let dir = std::env::temp_dir().join(format!("vlx-zcode-auth-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();

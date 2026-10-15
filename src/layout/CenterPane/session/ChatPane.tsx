@@ -24,6 +24,12 @@ import { ComposerOptionsButton, useComposerOptions } from "./ComposerOptions";
 import { ComposerToolbar } from "./ComposerToolbar";
 import { setComposerHeight, startComposerResize, useComposerHeight } from "./composerHeight";
 import type { ComposerChip } from "./composerLayout";
+import { navigateTranslation, settingsTranslationUrl, useTranslationRoute } from "../../../translation/navigation";
+import { TranslationProvider, useTranslationSession } from "../../../translation/state";
+import { TranslationComposerControl } from "../../../translation/ComposerControl";
+import { StatusDot } from "../../../components/StatusDot";
+import { translationError } from "../../../translation/SettingsSection";
+import { cancelSubmissionTranslation, sendOriginalSubmission } from "./outbox";
 import { ModelCatalogStatus } from "./ModelCatalogStatus";
 import { useChatModels } from "./useChatModels";
 import { StatusIndicator } from "../../../components/StatusIndicator";
@@ -93,6 +99,7 @@ import { CodexResetCredits } from "./CodexResetCredits";
 import { useEngineSwitch } from "./engineSwitch";
 import { ConversationViewHint } from "./ConversationViewHint";
 import { AgentMissingNotice } from "./AgentMissingNotice";
+import { AgentVersionBadge } from "./AgentVersionBadge";
 import { isShareSurface } from "../../../ipc/shareBase";
 import { isAgentNotInstalledError } from "../../../ipc/backendError";
 import { usePermissionRestart } from "./permissionRestart";
@@ -114,7 +121,8 @@ import {
 } from "./toolRuns";
 import "./session-view.css";
 import { onTransportReconnect, onTransportDisconnect } from "../../../ipc/transport";
-import { useOutbox, emptySubmissions, acknowledgeSubmissions, createSubmission, deliverSubmission, retrySubmission, submissionsFor, ChatVersions } from "./outbox";
+import { TranslationTime } from "../../../translation/Time";
+import { useOutbox, emptySubmissions, acknowledgeSubmissions, createSubmission, deliverSubmission, retrySubmission, submissionsFor, ChatVersions, unconfirmedSubmissionRows } from "./outbox";
 import { cachedChat, cacheChat, mergeRows, reconcileChat, chatSyncMetrics } from "./chatCache";
 import { ChatSearch } from "./ChatSearch";
 import { QueuedMessageText } from "./QueuedMessageText";
@@ -275,6 +283,10 @@ export function ChatPane({
   // Messages typed while the agent was busy. They belong to the backend, not to this pane: a second view
   // of the same session has to show the same queue, and the queue has to outlive this pane being closed.
   const [queue, setQueueState] = useState<QueuedMessage[]>(() => cachedChat(session.id)?.queue ?? []);
+  // Retire optimistic rows only after React has committed their host-backed replacements.
+  useEffect(() => {
+    acknowledgeSubmissions(session.id, [...rows, ...queue].map(row => row.id));
+  }, [session.id, rows, queue, pendingSubmissions]);
   const [steeringQueue, setSteeringQueue] = useState(false);
   const steeringQueueRef = useRef(false);
   /** The queued message being rewritten in place, and the text so far. */
@@ -345,6 +357,11 @@ export function ChatPane({
   /** Backend-owned start of the logical turn currently in flight. */
   const [actionFeedback, setActionFeedback] = useState("");
   const [sending, setSending] = useState(false);
+  const translation = useTranslationSession(session.id);
+  const translationRoute = useTranslationRoute();
+  useEffect(() => {
+    if (translation.settings && !translation.settings.config.enabled && translationRoute.get("translation") === "languages" && translationRoute.get("translationSession") === session.id) navigateTranslation(settingsTranslationUrl());
+  }, [translation.settings?.config.enabled, session.id, translationRoute.get("translation"), translationRoute.get("translationSession")]);
   const shellSubmission = useRef<{ sessionId: string; command: string; id: string; pending: boolean } | null>(null);
   const stopping = useRef(false);
   const stop = () => {
@@ -373,6 +390,8 @@ export function ChatPane({
     }
   }, setError);
   const [draft, setDraft] = useState("");
+  const latestDraft = useRef(draft);
+  latestDraft.current = draft;
   // Only the browsing position and unsent draft are local. Recall reads the backend's conversation and queue.
   const inputHistory = useRef<{
     id: string | null;
@@ -457,7 +476,6 @@ export function ChatPane({
       switch (event.type) {
         case "rows":
           if (!versions.accept("rows", event.revision, event.epoch)) break;
-          acknowledgeSubmissions(session.id, event.rows.map(row => row.id));
           applyRows(event.rows);
 
           break;
@@ -467,7 +485,6 @@ export function ChatPane({
           prependScroll.current = null;
           if (!versions.accept("rows", event.revision, event.epoch)) break;
           setUserMessages(event.userMessages ?? []);
-          acknowledgeSubmissions(session.id, event.rows.map(row => row.id));
           setRows(event.rows);
           setHasMore(event.hasMore ?? false);
           setPendingRewind((pending) =>
@@ -484,7 +501,6 @@ export function ChatPane({
           setUserMessages(event.userMessages ?? []);
           versions.queue = 0;
           setRows(event.rows ?? []);
-          acknowledgeSubmissions(session.id, (event.rows ?? []).map(row => row.id));
           setQueue([]);
           snapshotRef.current = undefined;
           setHasMore(event.hasMore ?? false);
@@ -498,7 +514,6 @@ export function ChatPane({
           break;
         case "queued":
           if (!versions.accept("queue", event.revision, event.epoch)) break;
-          acknowledgeSubmissions(session.id, event.items.map(item => item.id));
           setQueue(event.items);
           break;
         case "permission":
@@ -646,7 +661,6 @@ export function ChatPane({
           versions.epoch = snapshot.startedAt ?? versions.epoch;
           versions.rows = snapshot.rowsRevision ?? versions.rows;
           versions.queue = snapshot.queueRevision ?? versions.queue;
-          acknowledgeSubmissions(session.id, [...snapshot.rows, ...snapshot.queue].map(row => row.id));
           setHasMore(snapshot.hasMore ?? false);
           snapshotRef.current = snapshot;
           cacheChat(session.id, snapshotRef.current);
@@ -736,7 +750,7 @@ export function ChatPane({
     const reconnect = onTransportReconnect(() => {
       void refresh().then(() => {
         if (!disposed && receiptsAvailable) for (const item of submissionsFor(session.id)) {
-          if (item.status === "unknown") void retrySubmission(session.id, item);
+          if (item.status === "unknown") void retrySubmission(session.id, item, undefined, () => translation.refresh(true));
         }
       });
     });
@@ -892,7 +906,8 @@ export function ChatPane({
     () => foldAgentTurns(turnEntries, (id) => foldOverrides.get(id) ?? foldAll),
     [turnEntries, foldOverrides, foldAll],
   );
-  const display = folded.rows;
+  const display = useMemo(() => [...folded.rows, ...unconfirmedSubmissionRows(rows, queue, pendingSubmissions)
+    .map(row => ({ kind: "row" as const, id: row.id, row }))], [folded.rows, rows, queue, pendingSubmissions]);
   const messageOrderRef = useRef<string[]>([]);
   const messageOrder = useMemo(() => {
     const next = display.map(entry => entry.id);
@@ -1315,6 +1330,10 @@ export function ChatPane({
     await opened;
   };
 
+  // Codex opens its thread before receiving input. Claude reports its native session only after the
+  // first message, so translated submissions must use the ordinary process startup for other agents.
+  const startTranslatedAgent = session.kind === "codex" ? ensureStarted : startAgent;
+
   /**
    * Send what is typed, or decide what happens to it when the agent is busy.
    *
@@ -1322,6 +1341,11 @@ export function ChatPane({
    * lands now, the agent takes it when it comes up for air. `interrupt` is the deliberate other choice —
    * stop what you are doing and read this instead.
    */
+  const finishSubmission = (item: import("./outbox").Submission, receipt: string | undefined) => {
+    if (!receipt && !latestDraft.current && submissionsFor(session.id).find(value => value.id === item.id)?.error?.includes("translation:required")) updateDraft(item.text);
+    void translation.refresh();
+  };
+
   const send = (behavior: SendBehavior = "queue") => {
     if (sending || shellSubmission.current?.pending || syncState !== "ready") return;
     const text = draft.trim();
@@ -1453,7 +1477,9 @@ export function ChatPane({
       return;
     }
     const images = attachments.map(({ mimeType, data }) => ({ mimeType, data }));
-    const item = createSubmission(session.id, text, images, behavior);
+    const translate = !!translation.settings?.config.enabled && !!translation.value?.enabled && !!translation.value.preferences.outgoing && !!text && !text.startsWith("/");
+    const existing = submissionsFor(session.id).find(item => item.text === text && item.behavior === behavior && JSON.stringify(item.images) === JSON.stringify(images) && !["sent", "queued"].includes(item.status));
+    const item = existing ?? createSubmission(session.id, text, images, behavior, translate);
     setSending(true);
     setError(null);
     updateDraft("");
@@ -1462,7 +1488,8 @@ export function ChatPane({
     setAttachments([]);
     setAttachNote(null);
     toEnd();
-    void deliverSubmission(session.id, item, engineRunning ? undefined : startAgent)
+    void deliverSubmission(session.id, item, engineRunning ? undefined : translate ? startTranslatedAgent : startAgent, () => translation.refresh(true))
+      .then(receipt => finishSubmission(item, receipt))
       .finally(() => setSending(false));
   };
 
@@ -1581,7 +1608,7 @@ export function ChatPane({
   };
 
   const answer = (request: ChatPermission, reply: PermissionAnswer) => {
-    void (async () => {
+    return (async () => {
       try {
         // The mode goes first: approving a plan is what ends plan mode, and the agent has to be out of it
         // before the tool it was asking about runs. It is also how a mode the answer adopts reaches the
@@ -1591,9 +1618,12 @@ export function ChatPane({
           updatedInput: reply.updatedInput,
           message: reply.message,
           updatedPermissions: reply.updatedPermissions,
+          questionAnswers: reply.questionAnswers,
+          sendOriginal: reply.sendOriginal,
         });
         setPermissions((prev) => prev.filter((p) => p.id !== request.id));
       } catch (err) {
+        if (reply.questionAnswers) throw err;
         setError(String(err));
       }
     })();
@@ -1933,17 +1963,24 @@ export function ChatPane({
     const item = pendingSubmissions.find(value => value.id === id);
     if (!item) return null;
     return <div className="sv-submission-status" role="status">
-      {t(`chat.submission.${item.status}`)}
-      {!readOnly && (item.status === "failed" || item.status === "unknown") && <button disabled={submissionReceipts !== true} onClick={() => void retrySubmission(session.id, item, item.status === "failed" && !engineRunning ? startAgent : undefined)}>
+      <span className={item.status === "translating" ? "translation-progress" : undefined}>{item.status === "translating" && <StatusDot status="working" size={6} />}{item.status === "translating" ? t("translation.translating") : item.status === "translationFailed" ? t("translation.failed") : item.status === "canceled" ? t("translation.canceled") : t(`chat.submission.${item.status}`)}</span>
+      {item.translation && ["translating", "translationFailed", "canceled"].includes(item.status) && <TranslationTime timing={translation.value?.pending.find(value => value.id === id) ?? item} serverTime={translation.value?.serverTime} running={item.status === "translating"} compact />}
+      {!readOnly && translation.settings?.config.enabled && item.status === "translating" && <button className="vlx-btn" onClick={() => void cancelSubmissionTranslation(session.id, item).catch(err => setError(translationError(err, t)))}>{t("translation.cancel")}</button>}
+      {!readOnly && translation.settings?.config.enabled && (item.status === "translationFailed" || item.status === "canceled") && <>
+        <button className="vlx-btn" disabled={!translation.value?.enabled} onClick={() => void retrySubmission(session.id, item, !engineRunning ? item.translation ? startTranslatedAgent : startAgent : undefined, () => translation.refresh(true)).then(receipt => finishSubmission(item, receipt))}>{t("translation.retry")}</button>
+        <button className="vlx-btn" onClick={() => void sendOriginalSubmission(session.id, item, !engineRunning ? startAgent : undefined).then(receipt => finishSubmission(item, receipt)).catch(err => setError(translationError(err, t)))}>{t("translation.sendOriginal")}</button>
+      </>}
+      {!readOnly && (item.status === "failed" || item.status === "unknown") && <button className="vlx-btn" disabled={submissionReceipts !== true} onClick={() => void retrySubmission(session.id, item, item.status === "failed" && !engineRunning ? item.translation ? startTranslatedAgent : startAgent : undefined, () => translation.refresh(true)).then(receipt => finishSubmission(item, receipt))}>
         {t(item.status === "unknown" ? "chat.submission.check" : "common.retry")}
       </button>}
-      {item.error && !isAgentNotInstalledError(item.error) && <ErrorRow message={item.error} />}
+      {item.error && item.status !== "canceled" && !isAgentNotInstalledError(item.error) && <ErrorRow message={item.translation ? translationError(item.error, t) : item.error} />}
     </div>;
   };
 
   // Every chip that exists for this session, in the toolbar's traditional order. The toolbar applies the
   // user's inline preference on top and never renders a chip the pane did not offer.
   const composerChips: ComposerChip[] = [];
+  if (translation.settings?.config.enabled && translation.value?.enabled) composerChips.push({ id: "translation", node: <TranslationComposerControl /> });
   composerChips.push({ id: "model", node: (
     <ControlChip
       glyph={kindIconEl(session.kind, 14)}
@@ -1981,6 +2018,7 @@ export function ChatPane({
       onPick={pickEffort}
       // A level belongs to a model, so the box says which one it would become the default for.
       keepLabel={selected ? t("chat.keepChoiceFor", selected.label) : t("chat.keepChoice")}
+      onKeepCurrent={(value) => rememberPair(model ?? "", value)}
       menuWidth={230}
     />
   ) });
@@ -2114,7 +2152,7 @@ export function ChatPane({
   );
 
   return (
-    <SessionLinkDirectory.Provider value={cwd}>
+    <TranslationProvider state={translation}><SessionLinkDirectory.Provider value={cwd}>
     <div
       className="term-mount"
       ref={attachChatInputGuard}
@@ -2149,6 +2187,7 @@ export function ChatPane({
           </span>
           <span className="pt">{session.name}</span>
           <StatusIndicator status={status} unread={unread} />
+          {!mobile && <AgentVersionBadge session={session} hidden={hidden} />}
           <span className="pane-tools">
             <button title={t("term.searchMenu")} onClick={() => useTermStore.getState().openSearch()}>
               <Icons.search size={14} />
@@ -2254,14 +2293,14 @@ export function ChatPane({
                           openRuns={openRuns}
                           onToggleRun={toggleRun}
                           onToggleFold={toggleTurn}
-                          onRewind={askRewind}
-                    rewindDisabledReason={rewindDisabledReason}
+                          onRewind={rows.some(row => row.id === entry.id) ? askRewind : undefined}
+                          rewindDisabledReason={rewindDisabledReason}
                           rewindScopes={rewindScopes}
                           rewindRequest={rewindRequest}
                           onRewindRequestHandled={finishRewindRequest}
                           onCancelShell={readOnly ? undefined : cancelShell}
+                          feedback={submissionFeedback(entry.id)}
                         />
-                        {submissionFeedback(entry.id)}
                       </div>
                     );
                   })}
@@ -2277,22 +2316,14 @@ export function ChatPane({
                     openRuns={openRuns}
                     onToggleRun={toggleRun}
                     onToggleFold={toggleTurn}
-                    onRewind={askRewind}
+                    onRewind={rows.some(row => row.id === entry.id) ? askRewind : undefined}
                     rewindDisabledReason={rewindDisabledReason}
                     rewindScopes={rewindScopes}
                     rewindRequest={rewindRequest}
                     onRewindRequestHandled={finishRewindRequest}
                     onCancelShell={readOnly ? undefined : cancelShell}
+                    feedback={submissionFeedback(entry.id)}
                   />
-                  {submissionFeedback(entry.id)}
-                </div>
-              ))}
-              {pendingSubmissions.filter(item => !rows.some(row => row.id === item.id) && !queue.some(queued => queued.id === item.id)).map(item => (
-                <div className="sv-item sv-submission" key={item.id} data-submission-id={item.id}>
-                  <Entry entry={{ kind: "row", id: item.id, row: { kind: "user", id: item.id, text: item.text, images: item.images } }}
-                    label={label} icon={kindIcon} cwd={cwd} openRuns={openRuns} onToggleRun={toggleRun}
-                    rewindScopes={[]} rewindRequest={null} onRewindRequestHandled={finishRewindRequest} />
-                  {submissionFeedback(item.id)}
                 </div>
               ))}
               {turnStartedAt !== undefined && <WorkingRow startedAt={turnStartedAt} />}
@@ -2620,7 +2651,7 @@ export function ChatPane({
                   {busy && <span>{t("chat.interruptTooltip")}{session.kind !== "antigravity" && <> · {t("chat.steerTooltip", steerCombo)}</>}</span>}
                 </div>
               )}
-              <ComposerToolbar mobile={mobile} chips={composerChips} inline={composerInlineChips}
+              <ComposerToolbar mobile={mobile} chips={composerChips} inline={["translation", ...composerInlineChips]}
                 actions={<>
                   {(session.kind === "claude" || session.kind === "codex") && <UsageMeter extras={extras} />}
                   {busy && session.kind !== "antigravity" && (
@@ -2651,7 +2682,7 @@ export function ChatPane({
       {engineConfirm}
       {permissionRestart.dialog}
     </div>
-    </SessionLinkDirectory.Provider>
+    </SessionLinkDirectory.Provider></TranslationProvider>
   );
 }
 
