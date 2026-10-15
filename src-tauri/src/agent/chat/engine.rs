@@ -2092,7 +2092,7 @@ impl ChatManager {
             return pi::respond_extension_ui(app, session_id, &proc, request_id, allow);
         }
         if proc.kind == SessionKind::Zcode {
-            return zcode::respond(app, session_id, &proc, request_id, &request, allow, updated_input, message);
+            return zcode::respond(app, session_id, &proc, request_id, allow, updated_input, message);
         }
         if proc.permissions.lock().unwrap().remove(request_id).is_none() {
             return Err("That permission request is no longer waiting for an answer".into());

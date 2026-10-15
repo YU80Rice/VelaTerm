@@ -12,6 +12,7 @@ import { randomUUID } from 'node:crypto';
 if (process.platform !== 'win32') throw Error('此回归脚本验证 Windows 成品；协议单测支持其他平台。');
 const exe = process.env.VELATERM_TEST_EXE;
 const bin = process.env.ZCODE_TEST_BIN;
+const expectedVersion = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8')).version;
 if (!exe || !bin) throw Error('请设置 VELATERM_TEST_EXE 和 ZCODE_TEST_BIN。');
 const root = await mkdtemp(path.join(tmpdir(), 'vela-zcode-e2e-'));
 console.log(JSON.stringify({ fixtureRoot: root }));
@@ -95,7 +96,7 @@ try {
     pending.set(id, { resolve: value => { clearTimeout(timer); resolve(value); }, reject: error => { clearTimeout(timer); reject(Error(cmd + ': ' + error.message)); } });
     socket.send(JSON.stringify({ t: 'invoke', id, cmd, args }));
   });
-  assert.equal(await call('app_version'), '0.2.9');
+  assert.equal(await call('app_version'), expectedVersion);
   await call('set_app_settings', { entries: { 'vlx-settings': JSON.stringify({ agentDefaults: { zcode: { path: wrapper } } }) } });
   const project = await call('import_project', { rootPath: workspace });
   const parent = await call('create_session', { projectId: project.id, name: 'Zcode 测试父会话', kind: 'terminal', cwd: workspace, engine: 'tui' });
@@ -166,7 +167,7 @@ try {
   await delay(500);
   await call('chat_interrupt', { sessionId: beta });
   await until(() => call('chat_snapshot', { sessionId: beta }), snapshot => !snapshot.turnStartedAt, '原生中断');
-  const result = { nativeConcurrentSessions: true, nativeResume: true, offlineHistory: true, permissionDenial: true, writeToolAndArguments: true, planApproval: true, interrupt: true, zcodeGuiUsed: false, productionAccountAuthorization: false };
+  const result = { appVersion: expectedVersion, nativeConcurrentSessions: true, nativeResume: true, offlineHistory: true, permissionDenial: true, permissionReannouncement: true, pendingInteractionCancellation: true, writeToolAndArguments: true, planApproval: true, interrupt: true, zcodeGuiUsed: false, productionAccountAuthorization: false };
   await writeFile(path.join(root, 'result.json'), JSON.stringify(result, null, 2));
   console.log(JSON.stringify({ ...result, evidence: path.join(root, 'result.json') }));
 } finally {

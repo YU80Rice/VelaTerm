@@ -176,12 +176,17 @@ fn apply_tool(proc: &ChatProcess, payload: &Value) {
     timeline.upsert(ChatRow::Tool{id:id.into(),name:payload["toolName"].as_str().map(str::to_string).unwrap_or(old_name),input:payload.get("input").cloned().unwrap_or(old_input),output:output.or(old_output),is_error:error,status:if error {"failed"}else if kind=="result" {"completed"}else{"running"},subagent:None,children:vec![]});
 }
 
-pub(super) fn respond(app: &AppCtx, session: &str, proc: &Arc<ChatProcess>, id: &str, payload: &Value, allow: bool, input: Option<Value>, message: Option<&str>) -> Result<(), String> {
+pub(super) fn respond(app: &AppCtx, session: &str, proc: &Arc<ChatProcess>, id: &str, allow: bool, input: Option<Value>, message: Option<&str>) -> Result<(), String> {
+    // 与终态清理共用卡片锁；拒绝迟到/重复回答，并使用重发后最新的传输 ID。
+    // 锁保持至 Working 发布，保证终态清理及 Waiting 不会被迟到回答反向覆盖。
+    let mut permissions = proc.permissions.lock().unwrap();
+    let payload = permissions.get(id).cloned().ok_or("That permission request is no longer waiting for an answer")?;
+    if !proc.alive.load(Ordering::Relaxed) { return Err("Zcode 进程已停止，请重新打开会话".into()); }
     let result = if payload["zcodeMethod"] == "interaction/requestUserInput" {
         json!({"action":if allow{"accept"}else{"cancel"},"content":input.unwrap_or_else(||json!({})),"reason":message.unwrap_or("")})
     } else { json!({"decision":if allow{"allow"}else{"deny"},"reason":message.unwrap_or("")}) };
     proc.write(&json!({"id":payload["nativeRequestId"],"result":result}))?;
-    proc.permissions.lock().unwrap().remove(id);
+    permissions.remove(id);
     emit(app,session,json!({"type":"permissionResolved","id":id}));
     super::emit_state(app,session,AgentState::Working);
     Ok(())
@@ -347,6 +352,38 @@ fn report(app: &AppCtx, session: &str, input: &str, text: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ended_interaction_rejects_late_response_before_touching_protocol() {
+        let app = super::super::tests::ctx("zcode-late-interaction");
+        let proc = super::super::tests::inert_process(SessionKind::Zcode);
+        let stale = json!({"nativeRequestId":"server-1","zcodeMethod":"interaction/requestPermission"});
+        proc.permissions.lock().unwrap().insert("permission-1".into(), stale.clone());
+        clear_interactions(&app,"s",&proc);
+        let error = respond(&app,"s",&proc,"permission-1",true,None,None).unwrap_err();
+        assert_eq!(error,"That permission request is no longer waiting for an answer");
+    }
+
+    #[test]
+    fn interaction_answer_uses_latest_transport_and_rejects_replay() {
+        use std::process::Stdio;
+        let app = super::super::tests::ctx("zcode-interaction-replay");
+        let proc = super::super::tests::inert_process(SessionKind::Zcode);
+        let mut command = crate::host::command(if cfg!(windows) {"cmd.exe"} else {"cat"});
+        if cfg!(windows) { command.args(["/D","/C","more"]); }
+        let mut child = command.stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
+        *proc.stdin.lock().unwrap() = child.stdin.take();
+        proc.permissions.lock().unwrap().insert("permission-1".into(),json!({"nativeRequestId":"server-2","zcodeMethod":"interaction/requestPermission"}));
+        let first = respond(&app,"s",&proc,"permission-1",true,None,None);
+        let repeated = respond(&app,"s",&proc,"permission-1",false,None,None);
+        proc.stdin.lock().unwrap().take();
+        let output = child.wait_with_output().unwrap();
+        first.unwrap();
+        assert!(repeated.is_err(),"同一卡片只能回答一次");
+        let frames: Vec<Value> = String::from_utf8(output.stdout).unwrap().lines()
+            .filter(|line| !line.trim().is_empty()).map(|line|serde_json::from_str(line).unwrap()).collect();
+        assert_eq!(frames,vec![json!({"id":"server-2","result":{"decision":"allow","reason":""}})]);
+    }
     #[test]
     fn native_interaction_reannouncement_and_terminal_keep_one_live_card() {
         let app = super::super::tests::ctx("zcode-interaction-owner");
