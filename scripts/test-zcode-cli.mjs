@@ -26,7 +26,9 @@ const wrapper = path.join(root, 'fixture-zcode.cmd');
 const environmentLog = path.join(root, 'launch-profiles.txt');
 // 0.2.10 还会单独执行 --version；该探测不读取历史，不属于 app-server 环境比较。
 await writeFile(wrapper, '@echo off\r\nif /I "%~1"=="app-server" >> "%VELA_ZCODE_ENV_LOG%" echo("%USERPROFILE%"\r\nset "USERPROFILE=%VELA_ZCODE_TEST_PROFILE%"\r\n"%VELA_ZCODE_TEST_BINARY%" %*\r\n');
+let generationRequests = 0;
 const modelServer = createServer(async (request, response) => {
+  generationRequests++;
   let raw = '';
   for await (const chunk of request) raw += chunk;
   const body = JSON.parse(raw);
@@ -54,7 +56,7 @@ await new Promise(resolve => modelServer.listen(0, '127.0.0.1', resolve));
 await writeFile(path.join(nativeRoot, '.zcode/v2/provider_config.json'), JSON.stringify({ schemaVersion: 1, config: {
   providerConfigRules: { providerRules: [{ providerId: 'local-fixture', providerName: 'Local fixture', enabled: true, config: {
     group: 'standard-personal', access: { type: 'api-key', apiKey: 'fixture-only' },
-    api: { type: 'openai-chat-completions', baseUrl: `http://127.0.0.1:${modelServer.address().port}/v1` }, personalModelIds: ['gpt-4o'], visibility: 'visible',
+    api: { type: 'openai-chat-completions', baseUrl: `http://127.0.0.1:${modelServer.address().port}/v1` }, personalModelIds: ['gpt-4o', 'gpt-4o-mini'], visibility: 'visible',
   } }] }, modelConfigRules: { providerModelRules: [], manualProviderModelRules: [] }, defaultModelSelection: { providerId: 'local-fixture', modelId: 'gpt-4o' },
 } }));
 const reservation = net.createServer();
@@ -102,14 +104,29 @@ try {
   await call('set_app_settings', { entries: { 'vlx-settings': JSON.stringify({ agentDefaults: { zcode: { path: wrapper } } }) } });
   const project = await call('import_project', { rootPath: workspace });
   const parent = await call('create_session', { projectId: project.id, name: 'Zcode 测试父会话', kind: 'terminal', cwd: workspace, engine: 'tui' });
-  const create = async () => {
+  const create = async (start = true) => {
     const session = await call('agent_session_create', { request: { requestId: randomUUID(), context: { projectId: project.id, groupId: null, activeSessionId: parent.id, placement: 'child' }, kind: 'zcode', presetId: null } });
     assert.equal(session.kind, 'zcode'); assert.equal(session.parentSessionId, parent.id); assert.equal(session.engine, 'chat');
     sessions.push(session.id);
+    if (!start) return session.id;
     await call('chat_start', { sessionId: session.id, fastMode: false });
     await until(() => call('chat_snapshot', { sessionId: session.id }), snapshot => snapshot.model === 'local-fixture/gpt-4o', '原生模型就绪');
     return session.id;
   };
+  // 空白会话尚无 CLI 进程：必须先能选择模型，不能先发送消息才能解锁菜单。
+  const cold = await create(false);
+  const coldModels = await call('chat_models', { sessionId: cold });
+  assert(coldModels.some(model => model.id === 'local-fixture/gpt-4o-mini' && model.description.includes('Local fixture')), '首次启动前模型菜单必须显示原生模型和供应商');
+  assert(!(await call('list_tree')).sessions.find(session => session.id === cold).agentSessionId, '目录查询不能绑定临时原生会话');
+  const coldBrowserUI = await checkZcodeBrowser({ base, token, sessionName: (await call('list_tree')).sessions.find(session => session.id === cold).name, root, cold: true });
+  assert.equal(generationRequests, 0, '打开空白模型菜单不能触发模型生成');
+  await call('chat_set_model', { sessionId: cold, model: 'local-fixture/gpt-4o-mini' });
+  await call('chat_start', { sessionId: cold, fastMode: false });
+  await until(() => call('chat_snapshot', { sessionId: cold }), snapshot => snapshot.model === 'local-fixture/gpt-4o-mini', '首次启动应用预选模型');
+  const coldNative = (await call('list_tree')).sessions.find(session => session.id === cold).agentSessionId;
+  await call('chat_stop', { sessionId: cold });
+  assert((await call('chat_models', { sessionId: cold })).some(model => model.id === 'local-fixture/gpt-4o-mini'), '停止后已有会话仍须提供模型菜单');
+  assert.equal((await call('list_tree')).sessions.find(session => session.id === cold).agentSessionId, coldNative, '查询不能改写已保存的原生会话 ID');
   const finished = sessionId => until(() => call('chat_snapshot', { sessionId }), snapshot => !snapshot.turnStartedAt && snapshot.rows.some(row => row.kind === 'assistant' && !row.streaming), '原生回合结束');
   const [alpha, beta] = await Promise.all([create(), create()]);
   await Promise.all([call('chat_send', { sessionId: alpha, text: 'ALPHA' }), call('chat_send', { sessionId: beta, text: 'BETA' })]);
@@ -173,7 +190,7 @@ try {
   await until(() => call('chat_snapshot', { sessionId: beta }), snapshot => !snapshot.turnStartedAt, '原生中断');
   const tree = await call('list_tree');
   const browserUI = await checkZcodeBrowser({ base, token, sessionName: tree.sessions.find(session => session.id === alpha).name, root });
-  const result = { appVersion: expectedVersion, nativeConcurrentSessions: true, nativeResume: true, offlineHistory: true, permissionDenial: true, permissionReannouncement: true, pendingInteractionCancellation: true, writeToolAndArguments: true, planApproval: true, interrupt: true, browserUI, zcodeGuiUsed: false, productionAccountAuthorization: false };
+  const result = { appVersion: expectedVersion, coldModelCatalogue: true, coldModelSelection: true, stoppedModelCatalogue: true, coldBrowserUI, nativeConcurrentSessions: true, nativeResume: true, offlineHistory: true, permissionDenial: true, permissionReannouncement: true, pendingInteractionCancellation: true, writeToolAndArguments: true, planApproval: true, interrupt: true, browserUI, zcodeGuiUsed: false, productionAccountAuthorization: false };
   await writeFile(path.join(root, 'result.json'), JSON.stringify(result, null, 2));
   console.log(JSON.stringify({ ...result, evidence: path.join(root, 'result.json') }));
 } finally {

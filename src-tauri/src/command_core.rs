@@ -1583,7 +1583,14 @@ pub fn chat_models(ctx: &AppCtx, session_id: &str) -> Result<serde_json::Value, 
             })).collect::<Vec<_>>())
         }
         SessionKind::Zcode => {
-            serde_json::to_value(ctx.chat().live_zcode_models(session_id))
+            let models = if let Some(models) = ctx.chat().live_zcode_models(session_id) { models? }
+                else {
+                    let bin = crate::agent::executable::for_session(ctx, &session);
+                    let root = repo::get_project_root(&ctx.db().conn.lock().unwrap(), &session.project_id)?;
+                    let cwd = session.cwd.as_deref().filter(|cwd| !cwd.trim().is_empty()).or(root.as_deref());
+                    crate::agent::zcode_cli::session_models(ctx, session_id, &bin, cwd)?
+                };
+            serde_json::to_value(models)
         }
         // Live capabilities enrich the complete catalogue; the CLI picker only lists a subset. What a
         // running conversation reports is kept, so a session that is not running still offers the models

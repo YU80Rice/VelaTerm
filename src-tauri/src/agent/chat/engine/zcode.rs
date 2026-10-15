@@ -99,18 +99,7 @@ fn apply_snapshot(app: &AppCtx, session: &str, proc: &Arc<ChatProcess>, snapshot
     if let (Some(provider), Some(model)) = (current["providerId"].as_str(), current["modelId"].as_str()) {
         *proc.model.lock().unwrap() = Some(format!("{provider}/{model}"));
     }
-    proc.zcode.lock().unwrap().models = settings["model"]["available"].as_array().into_iter().flatten()
-        .filter(|item| item["disabledReason"].is_null()).filter_map(|item| {
-            let description = item["description"].as_str().unwrap_or_default();
-            let provider = item["providerLabel"].as_str().unwrap_or_default();
-            // 不同供应商可以提供同名模型；保留原生来源名称，不能只剩下不可辨认的 UUID。
-            let hint = if provider.is_empty() { description.to_string() }
-                else if description.is_empty() { provider.to_string() }
-                else { format!("{provider} · {description}") };
-            Some(json!({"id":format!("{}/{}",item["ref"]["providerId"].as_str()?,item["ref"]["modelId"].as_str()?),
-                // 原生 description 可省略；chat_models 约定字符串，不能向模型菜单传 null。
-                "label":item["label"],"description":hint,"effortLevels":item["reasoning"]["levels"].as_array().into_iter().flatten().filter_map(|v|v["value"].as_str()).collect::<Vec<_>>()}))
-        }).collect();
+    proc.zcode.lock().unwrap().models = crate::agent::zcode_cli::model_entries(snapshot);
     for choice in settings["model"]["available"].as_array().into_iter().flatten() {
         if let (Some(provider),Some(model))=(choice["ref"]["providerId"].as_str(),choice["ref"]["modelId"].as_str()) {
             proc.zcode.lock().unwrap().model_choices.insert(format!("{provider}/{model}"),choice.clone());

@@ -2560,8 +2560,13 @@ impl ChatManager {
         }).map(|result| crate::agent::codex_models::parse_models(&result)))
     }
 
-    pub fn live_zcode_models(&self, session_id: &str) -> Vec<Value> {
-        self.get(session_id).ok().map(|proc| proc.zcode.lock().unwrap().models.clone()).unwrap_or_default()
+    pub fn live_zcode_models(&self, session_id: &str) -> Option<Result<Vec<Value>, String>> {
+        let proc = self.sessions.lock().unwrap().get(session_id).cloned()?;
+        if proc.kind != SessionKind::Zcode || !proc.alive.load(Ordering::Relaxed) { return None; }
+        // 不将尚未就绪误报为空目录，也不另起不同状态的 CLI 掩盖活跃进程的初始化失败。
+        if !proc.ready.load(Ordering::Relaxed) { return Some(Err("Zcode 正在初始化，请稍后重试模型列表".into())); }
+        let models = proc.zcode.lock().unwrap().models.clone();
+        Some(Ok(models))
     }
 
     /// Add a measured stream rate when this process observed matching output and usage events.

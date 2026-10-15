@@ -5,7 +5,7 @@ import { writeFile } from 'node:fs/promises';
 import net from 'node:net';
 import path from 'node:path';
 
-export async function checkZcodeBrowser({ base, token, sessionName, root }) {
+export async function checkZcodeBrowser({ base, token, sessionName, root, cold = false }) {
   const executable = process.env.VELATERM_TEST_BROWSER;
   if (!executable) return false;
   const reserve = net.createServer();
@@ -13,7 +13,7 @@ export async function checkZcodeBrowser({ base, token, sessionName, root }) {
   const port = reserve.address().port;
   await new Promise(resolve => reserve.close(resolve));
   const browser = spawn(executable, ['--headless=new', '--disable-gpu', '--no-first-run',
-    `--remote-debugging-port=${port}`, `--user-data-dir=${path.join(root, 'browser-profile')}`, 'about:blank'],
+    `--remote-debugging-port=${port}`, `--user-data-dir=${path.join(root, cold ? 'cold-browser-profile' : 'browser-profile')}`, 'about:blank'],
   { windowsHide: true, stdio: 'ignore' });
   let socket;
   const pending = new Map();
@@ -67,13 +67,21 @@ export async function checkZcodeBrowser({ base, token, sessionName, root }) {
     const selectSession = async () => {
       await until(() => evaluate(`Array.from(document.querySelectorAll('.nm')).some(n=>n.textContent===${JSON.stringify(sessionName)})`), Boolean, '独立 Zcode 会话树节点');
       await evaluate(`Array.from(document.querySelectorAll('.nm')).find(n=>n.textContent===${JSON.stringify(sessionName)}).click()`);
-      await until(() => evaluate(`Boolean(document.querySelector('.sv-box textarea'))&&Array.from(document.querySelectorAll('.sv-chip-label')).some(n=>n.textContent.includes('gpt-4o'))`), Boolean, '模型目录和聊天输入框');
+      await until(() => evaluate(`Boolean(document.querySelector('.sv-box textarea'))&&(${cold}||Array.from(document.querySelectorAll('.sv-chip-label')).some(n=>n.textContent.includes('gpt-4o')))`), Boolean, '模型目录和聊天输入框');
     };
     await send('Page.navigate', { url: base + '/?view=desktop' });
     await selectSession();
-    await evaluate(`Array.from(document.querySelectorAll('button.sv-chip')).find(n=>n.textContent.includes('gpt-4o')).click()`);
-    await until(() => evaluate(`Array.from(document.querySelectorAll('.sv-chip-box')).some(n=>n.querySelector('button')?.textContent.includes('gpt-4o')&&Array.from(n.querySelectorAll('[role="option"]')).some(row=>row.textContent.includes('gpt-4o')))`), Boolean, '展开模型菜单并显示原生模型');
+    await evaluate(`(${cold}?document.querySelector('button.sv-chip'):Array.from(document.querySelectorAll('button.sv-chip')).find(n=>n.textContent.includes('gpt-4o'))).click()`);
+    await until(() => evaluate(`Array.from(document.querySelectorAll('.sv-chip-box [role="option"]')).some(row=>row.textContent.includes('gpt-4o'))`), Boolean, '展开模型菜单并显示原生模型');
     assert(await evaluate(`Array.from(document.querySelectorAll('.sv-chip-box [role="option"]')).some(row=>row.textContent.includes('gpt-4o')&&row.textContent.includes('Local fixture'))`), '模型菜单应显示原生供应商名称');
+    if (cold) {
+      assert(!await evaluate(`document.body.innerText.includes('UI_RENDER_OK')`), '空白菜单验收必须发生在首次发送之前');
+      const screenshot = await send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false });
+      await writeFile(path.join(root, 'zcode-cold-model-menu.png'), Buffer.from(screenshot.data, 'base64'));
+      assert.deepEqual(exceptions, []);
+      await writeFile(path.join(root, 'cold-browser-result.json'), JSON.stringify({ modelMenu: true, providerHint: true, beforeFirstStart: true, uncaughtExceptions: exceptions, embeddedFrontend: true }, null, 2));
+      return true;
+    }
     await send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
     await send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
     await evaluate(`(()=>{const input=document.querySelector('.sv-box textarea');Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set.call(input,'UI_RENDER_TEST');input.dispatchEvent(new Event('input',{bubbles:true}));input.focus();})()`);

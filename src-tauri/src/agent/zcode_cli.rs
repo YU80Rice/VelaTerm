@@ -34,6 +34,10 @@ pub fn query(bin: &str, cwd: Option<&str>, method: &str, params: Value) -> Resul
     // 与会话启动统一重建登录环境，避免 USERPROFILE 等路径变量指向另一份历史库。
     crate::login_env::refresh_command(&mut cmd);
     prepare_environment(&mut cmd, crate::host::home_dir());
+    query_command(cmd, bin, cwd, method, params)
+}
+
+fn query_command(mut cmd: std::process::Command, bin: &str, cwd: Option<&str>, method: &str, params: Value) -> Result<Value,String> {
     super::executable::prepare_command(&mut cmd,bin);
     cmd.args(["app-server","--stdio","--standalone"]);
     if let Some(cwd)=cwd {cmd.current_dir(cwd);}
@@ -75,6 +79,34 @@ pub fn models(bin: &str) -> Result<Vec<String>,String> {
     let cwd=std::env::current_dir().map_err(|e|e.to_string())?.to_string_lossy().into_owned();
     let snapshot=query(bin,Some(&cwd),"session/create",json!({"workspace":{"workspacePath":cwd,"workspaceKey":cwd},"persistence":"deferred","titleGenerationEnabled":false}))?;
     Ok(snapshot["settings"]["model"]["available"].as_array().into_iter().flatten().filter(|m|m["disabledReason"].is_null()).filter_map(|m|Some(format!("{}/{}",m["ref"]["providerId"].as_str()?,m["ref"]["modelId"].as_str()?))).collect())
+}
+
+/// 尚未启动或已停止的会话也必须能选模型；临时目录查询不绑定或恢复用户原生会话。
+pub fn session_models(app: &crate::host::AppCtx, session_id: &str, bin: &str, cwd: Option<&str>) -> Result<Vec<Value>,String> {
+    let cwd = match cwd {
+        Some(cwd) => cwd.to_string(),
+        None => std::env::current_dir().map_err(|error| error.to_string())?.to_string_lossy().into_owned(),
+    };
+    let mut cmd = crate::host::command(bin);
+    cmd.current_dir(&cwd);
+    crate::agent::chat::engine::agent_environment(app, session_id, &mut cmd);
+    prepare_environment(&mut cmd, crate::host::home_dir());
+    let snapshot = query_command(cmd, bin, Some(&cwd), "session/create", json!({"workspace":{"workspacePath":cwd,"workspaceKey":cwd},"persistence":"deferred","titleGenerationEnabled":false}))?;
+    Ok(model_entries(&snapshot))
+}
+
+/// 冷查询和运行中会话使用同一投影，保持来源名称、思考级别及字符串说明契约。
+pub fn model_entries(snapshot: &Value) -> Vec<Value> {
+    snapshot["settings"]["model"]["available"].as_array().into_iter().flatten()
+        .filter(|item| item["disabledReason"].is_null()).filter_map(|item| {
+            let description = item["description"].as_str().unwrap_or_default();
+            let provider = item["providerLabel"].as_str().unwrap_or_default();
+            let hint = if provider.is_empty() { description.to_string() }
+                else if description.is_empty() { provider.to_string() }
+                else { format!("{provider} · {description}") };
+            Some(json!({"id":format!("{}/{}",item["ref"]["providerId"].as_str()?,item["ref"]["modelId"].as_str()?),
+                "label":item["label"],"description":hint,"effortLevels":item["reasoning"]["levels"].as_array().into_iter().flatten().filter_map(|v|v["value"].as_str()).collect::<Vec<_>>()}))
+        }).collect()
 }
 
 pub fn transcript(bin: &str, cwd: Option<&str>, native: &str) -> Result<Vec<super::transcript::TranscriptMessage>,String> {
