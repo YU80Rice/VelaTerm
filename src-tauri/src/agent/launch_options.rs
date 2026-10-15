@@ -22,6 +22,8 @@ pub struct AgentSelection {
 #[serde(rename_all = "camelCase")]
 pub struct LaunchOption {
     pub supports_plan_execute: bool,
+    /// 调度角色由 Harness 能力决定。
+    pub plan_execute_roles: Vec<&'static str>,
     /// Whether this CLI has a verified one-shot adapter for reference summarization.
     pub supports_refer_summary: bool,
     pub id: SessionKind,
@@ -53,6 +55,7 @@ pub fn catalog() -> Vec<LaunchOption> {
             &["low", "medium", "high", "xhigh", "max"],
         ),
         (Codex, "Codex", Some("model_reasoning_effort"), &[]),
+        (Zcode, "Zcode", None, &[]),
         (Opencode, "OpenCode", Some("--variant"), &[]),
         (
             Copilot,
@@ -120,6 +123,7 @@ pub fn catalog() -> Vec<LaunchOption> {
         .iter()
         .map(|(id, label, effort_flag, levels)| LaunchOption {
             supports_plan_execute: super::plan_execute::supported(*id),
+            plan_execute_roles: if super::plan_execute::supported(*id) { vec!["plan", "exec", "review"] } else { vec![] },
             supports_refer_summary: super::headless::spec(*id).is_some(),
             id: *id,
             label,
@@ -342,8 +346,8 @@ mod tests {
         let options = catalog();
         let mut workflow: Vec<_> = options.iter().filter(|option| option.supports_plan_execute).map(|option| option.id.as_str()).collect();
         workflow.sort_unstable();
-        assert_eq!(workflow, ["claude", "codex", "omp", "opencode", "pi"]);
-        assert_eq!(options.iter().filter(|s| s.accepts_task).count(), 14);
+        assert_eq!(workflow, ["claude", "codex", "omp", "opencode", "pi", "zcode"]);
+        assert_eq!(options.iter().filter(|s| s.accepts_task).count(), 15);
         assert!(
             !options
                 .iter()

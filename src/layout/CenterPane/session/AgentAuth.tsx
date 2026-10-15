@@ -6,7 +6,7 @@ import { platform } from "../../../platform";
 import Icons from "../../../components/Icons";
 import { ChipPopover } from "./extras";
 
-type AuthProps = { provider: "Claude" | "Codex"; sessionId: string; state?: ChatAuthState; busy: boolean };
+type AuthProps = { provider: "Claude" | "Codex" | "Zcode"; sessionId: string; state?: ChatAuthState; busy: boolean };
 
 /** True while a sign-in or sign-out is unresolved; the account chip yields to the inline panel then. */
 export function needsAttention(state?: ChatAuthState) {
@@ -39,6 +39,7 @@ function AuthPanel({ provider, sessionId, state, busy }: AuthProps) {
   const [error, setError] = useState<string | null>(null);
   const [confirmLogout, setConfirmLogout] = useState(false);
   const [code, setCode] = useState("");
+  const [zcodeFamily, setZcodeFamily] = useState<"bigmodel" | "zai">("bigmodel");
   const active = state?.status === "starting" || state?.status === "pending" || state?.status === "submitting" || state?.status === "canceling";
   const signingOut = state?.status === "signingOut";
   const signedOut = state?.status === "signedOut";
@@ -90,12 +91,15 @@ function AuthPanel({ provider, sessionId, state, busy }: AuthProps) {
       </div>
     </form>}
     <div className="sv-auth-actions">
+      {provider === "Zcode" && !active && <select aria-label="Zcode 登录账户" value={zcodeFamily} disabled={sending || busy || signingOut} onChange={e=>setZcodeFamily(e.target.value as "zai"|"bigmodel")}>
+        <option value="bigmodel">BigModel（智谱）</option><option value="zai">Z.AI</option>
+      </select>}
       {active
         ? <button type="button" disabled={sending || state?.status === "submitting" || state?.status === "canceling"} onClick={() => void run(() => chatAuthCancel(sessionId))}>{t("common.cancel")}</button>
         : <>
           <button type="button" disabled={sending || busy || signingOut} title={busy ? t("chat.auth.wait") : undefined} onClick={() => {
             setConfirmLogout(false);
-            void run(() => chatAuthStart(sessionId));
+            void run(() => chatAuthStart(sessionId, provider === "Zcode" ? zcodeFamily : undefined));
           }}>{t(signedOut ? "chat.auth.login" : "chat.auth.start")}</button>
           {!signedOut && <button type="button" disabled={sending || busy || signingOut} title={busy ? t("chat.auth.wait") : undefined} onClick={() => {
             setError(null);

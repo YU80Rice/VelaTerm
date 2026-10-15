@@ -1,0 +1,340 @@
+//! Zcode 原生 CLI NDJSON；进程不连接桌面 GUI 或 mailbox。
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, atomic::Ordering};
+use serde_json::{json, Value};
+use rusqlite::OptionalExtension;
+use sha2::{Digest, Sha256};
+use super::{ChatProcess, ChatRow, emit, handle_turn_end, now_ms, start_waiting_message};
+use crate::{host::AppCtx, models::SessionKind, pty::AgentState};
+
+#[derive(Default)]
+pub(super) struct State {
+    last_seq: Option<u64>,
+    current_input: Option<String>,
+    completed: HashSet<String>,
+    pub models: Vec<Value>,
+    model_choices: HashMap<String,Value>,
+    pub auth_child: Option<Arc<std::sync::Mutex<std::process::Child>>>,
+}
+
+pub(super) fn native_id(proc: &ChatProcess) -> Result<String, String> {
+    proc.agent_session_id.lock().unwrap().clone().ok_or("Zcode 原生会话尚未就绪".into())
+}
+
+pub(super) fn command(proc: &ChatProcess, kind: &'static str, method: &str, mut params: Value) -> Result<Value, String> {
+    params["sessionId"] = json!(native_id(proc)?);
+    proc.request_and_wait(kind, |id| json!({"id":id,"method":method,"params":params}))
+}
+
+pub(super) fn set_model(proc: &ChatProcess, model: Option<&str>) -> Result<(), String> {
+    let model = model.ok_or("请从 Zcode 原生模型列表选择具体模型")?;
+    let choice=proc.zcode.lock().unwrap().model_choices.get(model).cloned().ok_or("Zcode 原生目录中没有此模型")?;
+    let selection=complete_selection(&choice,proc.effort.lock().unwrap().as_deref());
+    let response=command(proc, "set_model", "session/setModel", json!({"model":selection,"persistAsWorkspaceLastUsed":false}))?;
+    if let Some(settings)=response.get("settings") { *proc.effort.lock().unwrap()=settings["thoughtLevel"]["current"].as_str().map(str::to_string); }
+    Ok(())
+}
+
+fn complete_selection(choice: &Value, effort: Option<&str>) -> Value {
+    let mut selection=choice["ref"].clone();
+    let reasoning=&choice["reasoning"];
+    let level=effort.filter(|value|reasoning["levels"].as_array().is_some_and(|levels|levels.iter().any(|v|v["value"].as_str()==Some(*value))))
+        .or_else(||reasoning["defaultLevel"].as_str());
+    if let Some(level)=level {selection["options"]=json!({"reasoningLevel":level});}
+    selection
+}
+
+pub(super) fn set_effort(proc: &ChatProcess, effort: Option<&str>) -> Result<(),String> {
+    let model=proc.model.lock().unwrap().clone().ok_or("Zcode 尚未选择模型")?;
+    let choice=proc.zcode.lock().unwrap().model_choices.get(&model).cloned().ok_or("Zcode 模型目录尚未就绪")?;
+    let selected=effort.or_else(||choice["reasoning"]["defaultLevel"].as_str()).ok_or("该 Zcode 模型没有默认思考级别")?;
+    let response=command(proc,"set_effort","session/setThoughtLevel",json!({"thoughtLevel":selected,"persistAsWorkspaceLastUsed":false}))?;
+    *proc.effort.lock().unwrap()=response["settings"]["thoughtLevel"]["current"].as_str().or(Some(selected)).map(str::to_string);
+    Ok(())
+}
+
+pub(super) fn bootstrap(app: AppCtx, session_id: String, proc: Arc<ChatProcess>, resume: Option<String>) {
+    std::thread::spawn(move || {
+        let run = || -> Result<(), String> {
+            let cwd = proc.cwd.clone().unwrap_or_else(|| std::env::current_dir().unwrap_or_default().to_string_lossy().into_owned());
+            let workspace = json!({"workspacePath":cwd,"workspaceKey":cwd});
+            let method = if resume.is_some() { "session/resume" } else { "session/create" };
+            let params = if let Some(native) = resume { json!({"sessionId":native,"workspace":workspace}) }
+                else { json!({"workspace":workspace,"titleGenerationEnabled":false}) };
+            let snapshot = proc.request_and_wait("zcode_open", |id| json!({"id":id,"method":method,"params":params}))?;
+            let native = snapshot["session"]["sessionId"].as_str().ok_or("Zcode 未返回原生会话 ID")?;
+            if !super::verify_native_identity(&app, &session_id, &proc, native) { return Err("Zcode 原生会话身份不匹配".into()); }
+            *proc.agent_session_id.lock().unwrap() = Some(native.into());
+            let changed = crate::db::repo::set_agent_session_id(&app.db().conn.lock().unwrap(), &session_id, native, SessionKind::Zcode)?;
+            if changed { app.emit(crate::host::TREE_CHANGED, ()); }
+            let selected_model = proc.model.lock().unwrap().clone();
+            let selected_effort = proc.effort.lock().unwrap().clone();
+            let selected_mode = proc.mode.lock().unwrap().clone();
+            apply_snapshot(&app, &session_id, &proc, &snapshot, true);
+            let subscription = command(&proc, "zcode_subscribe", "session/subscribe", json!({"deliveryKind":"desktop-continuous","includeSnapshot":false}))?;
+            proc.zcode.lock().unwrap().last_seq = subscription["eventSeq"].as_u64();
+            if let Some(model) = selected_model { set_model(&proc, Some(&model))?; *proc.model.lock().unwrap() = Some(model); }
+            if let Some(effort) = selected_effort {
+                set_effort(&proc,Some(&effort))?;
+            }
+            command(&proc, "set_permission_mode", "session/setMode", json!({"mode":selected_mode}))?;
+            *proc.mode.lock().unwrap() = selected_mode;
+            proc.permission_confirmed.store(true, Ordering::Relaxed);
+            emit(&app, &session_id, json!({"type":"session","agentSessionId":native,"model":proc.model.lock().unwrap().clone()}));
+            proc.ready.store(true, Ordering::Relaxed);
+            start_waiting_message(&app, &session_id, &proc);
+            Ok(())
+        };
+        if let Err(error) = run() {
+            emit(&app, &session_id, json!({"type":"error","message":format!("Zcode CLI 初始化失败：{error}")}));
+            super::release_process(&app, &session_id, &proc);
+        }
+    });
+}
+
+fn apply_snapshot(app: &AppCtx, session: &str, proc: &Arc<ChatProcess>, snapshot: &Value, history: bool) {
+    let settings = &snapshot["settings"];
+    let current = &settings["model"]["current"];
+    if let (Some(provider), Some(model)) = (current["providerId"].as_str(), current["modelId"].as_str()) {
+        *proc.model.lock().unwrap() = Some(format!("{provider}/{model}"));
+    }
+    proc.zcode.lock().unwrap().models = settings["model"]["available"].as_array().into_iter().flatten()
+        .filter(|item| item["disabledReason"].is_null()).filter_map(|item| {
+            Some(json!({"id":format!("{}/{}",item["ref"]["providerId"].as_str()?,item["ref"]["modelId"].as_str()?),
+                "label":item["label"],"description":item["description"],"effortLevels":item["reasoning"]["levels"].as_array().into_iter().flatten().filter_map(|v|v["value"].as_str()).collect::<Vec<_>>()}))
+        }).collect();
+    for choice in settings["model"]["available"].as_array().into_iter().flatten() {
+        if let (Some(provider),Some(model))=(choice["ref"]["providerId"].as_str(),choice["ref"]["modelId"].as_str()) {
+            proc.zcode.lock().unwrap().model_choices.insert(format!("{provider}/{model}"),choice.clone());
+        }
+    }
+    if let Some(mode) = settings["mode"]["current"].as_str() { *proc.mode.lock().unwrap() = mode.into(); }
+    *proc.effort.lock().unwrap() = settings["thoughtLevel"]["current"].as_str().map(str::to_string);
+    let commands = snapshot["slashCommands"].as_array().into_iter().flatten().map(|v|json!({"name":v["name"],"description":v["description"],"invocation":"/"})).collect::<Vec<_>>();
+    *proc.commands.lock().unwrap() = commands.clone();
+    emit(app,session,json!({"type":"commands","commands":commands}));
+    if history {
+        for message in snapshot["messages"].as_array().into_iter().flatten() {
+            let info = &message["info"];
+            if info["role"] == "user" {
+                let text = message["parts"].as_array().into_iter().flatten().filter(|p|p["type"]=="text").filter_map(|p|p["text"].as_str()).collect::<String>();
+                if let Some(id) = info["messageId"].as_str() { proc.timeline.lock().unwrap().upsert(ChatRow::User{id:id.into(),text,images:vec![],at:info["time"]["created"].as_i64()}); }
+            } else {
+                for part in message["parts"].as_array().into_iter().flatten() { apply_part(proc, part, false); }
+            }
+        }
+    }
+}
+
+pub(super) fn dispatch(proc: &Arc<ChatProcess>, input: &str, text: &str, images: &[super::ChatImage]) -> Result<(), String> {
+    if !images.is_empty() { return Err("Zcode 当前对话适配暂不支持图片附件".into()); }
+    let native = native_id(proc)?;
+    proc.zcode.lock().unwrap().current_input = Some(input.into());
+    let id = proc.request_id("zcode_send");
+    proc.write(&json!({"id":id,"method":"session/send","params":{"sessionId":native,"inputId":input,"content":text},"trace":{"traceId":input}}))
+}
+
+fn text_row(proc: &ChatProcess, id: &str, text: String, reasoning: bool, streaming: bool) {
+    let row = if reasoning { ChatRow::Reasoning{id:id.into(),text,streaming} }
+        else { ChatRow::Assistant{id:id.into(),text,streaming,model:proc.model.lock().unwrap().clone(),at:Some(now_ms() as i64),duration_ms:None} };
+    proc.timeline.lock().unwrap().upsert(row);
+}
+
+fn apply_part(proc: &ChatProcess, part: &Value, streaming: bool) {
+    let Some(id) = part["partId"].as_str() else { return; };
+    match part["type"].as_str() {
+        Some("text" | "reasoning") => {
+            let base=part["messageId"].as_str().unwrap_or(id);
+            let row_id=if part["type"]=="reasoning" {format!("{base}:reasoning")}else{base.into()};
+            let text = part["text"].as_str().unwrap_or("").to_string();
+            proc.buffers.lock().unwrap().insert(row_id.clone(),text.clone());
+            text_row(proc,&row_id,text,part["type"]=="reasoning",streaming);
+        }
+        Some("tool") => {
+            let state = &part["state"];
+            let error = state["status"] == "error";
+            proc.timeline.lock().unwrap().upsert(ChatRow::Tool{id:part["callId"].as_str().unwrap_or(id).into(),name:part["tool"].as_str().unwrap_or("Tool").into(),input:state["input"].clone(),output:state[if error {"error"}else{"output"}].as_str().map(str::to_string),is_error:error,status:if error {"failed"}else if state["status"]=="completed" {"completed"}else{"running"},subagent:None,children:vec![]});
+        }
+        _ => {}
+    }
+}
+
+fn apply_tool(proc: &ChatProcess, payload: &Value) {
+    let Some(id)=payload["toolCallId"].as_str() else {return};
+    let mut timeline=proc.timeline.lock().unwrap();
+    let previous=timeline.rows.iter().find(|row|row.id()==id).cloned();
+    let (old_name,old_input,old_output)=match previous {
+        Some(ChatRow::Tool{name,input,output,..})=>(name,input,output),
+        _=>("Tool".into(),Value::Null,None),
+    };
+    let kind=payload["kind"].as_str().unwrap_or("");
+    let error=kind=="error" || payload["result"]["isError"]==true;
+    let output=if error {payload["error"]["message"].as_str().map(str::to_string)}
+        else if kind=="result" {let result=&payload["result"]; result["content"].as_str().or_else(||result["output"].as_str()).map(str::to_string).or_else(||result["content"].as_array().map(|parts|parts.iter().filter_map(|p|p["text"].as_str()).collect::<String>()))}
+        else {payload["stdoutTail"].as_str().map(str::to_string)};
+    timeline.upsert(ChatRow::Tool{id:id.into(),name:payload["toolName"].as_str().map(str::to_string).unwrap_or(old_name),input:payload.get("input").cloned().unwrap_or(old_input),output:output.or(old_output),is_error:error,status:if error {"failed"}else if kind=="result" {"completed"}else{"running"},subagent:None,children:vec![]});
+}
+
+pub(super) fn respond(app: &AppCtx, session: &str, proc: &Arc<ChatProcess>, id: &str, payload: &Value, allow: bool, input: Option<Value>, message: Option<&str>) -> Result<(), String> {
+    let result = if payload["zcodeMethod"] == "interaction/requestUserInput" {
+        json!({"action":if allow{"accept"}else{"cancel"},"content":input.unwrap_or_else(||json!({})),"reason":message.unwrap_or("")})
+    } else { json!({"decision":if allow{"allow"}else{"deny"},"reason":message.unwrap_or("")}) };
+    proc.write(&json!({"id":payload["nativeRequestId"],"result":result}))?;
+    proc.permissions.lock().unwrap().remove(id);
+    emit(app,session,json!({"type":"permissionResolved","id":id}));
+    super::emit_state(app,session,AgentState::Working);
+    Ok(())
+}
+
+pub(super) fn handle_line(app: &AppCtx, session: &str, proc: &Arc<ChatProcess>, line: &str) {
+    let Ok(frame) = serde_json::from_str::<Value>(line) else { return; };
+    if frame.get("id").is_some() && frame.get("method").is_none() {
+        let key = frame["id"].as_str().map(str::to_owned).unwrap_or_else(||frame["id"].to_string());
+        let kind = proc.pending.lock().unwrap().remove(&key);
+        let error = frame.get("error").map(|e|e["message"].as_str().unwrap_or("Zcode 协议错误").to_string());
+        if let Some(waiter) = proc.waiters.lock().unwrap().remove(&key) {
+            let _ = waiter.send(match error {Some(e)=>Err(e),None=>Ok(frame["result"].clone())});
+        } else if let Some(error) = error {
+            emit(app,session,json!({"type":"error","message":error}));
+            if kind == Some("zcode_send") { handle_turn_end(app,session,proc,"zcode_failed",None); }
+        }
+        return;
+    }
+    let method = frame["method"].as_str().unwrap_or("");
+    let params = &frame["params"];
+    if frame.get("id").is_some() {
+        if method == "session/requestRuntimePreferences" {
+            let _ = proc.write(&json!({"id":frame["id"],"result":{"nativeSearchEnhancementsEnabled":true,"memoryEnabled":false,"askUserQuestionAutoResolutionEnabled":false}}));
+        } else if matches!(method,"interaction/requestPermission"|"interaction/requestUserInput") {
+            let native = proc.agent_session_id.lock().unwrap().clone();
+            if native.as_deref() != params["sessionId"].as_str() {
+                let _ = proc.write(&json!({"id":frame["id"],"error":{"code":-32602,"message":"会话不匹配"}})); return;
+            }
+            let key = frame["id"].as_str().map(str::to_owned).unwrap_or_else(||frame["id"].to_string());
+            let mut input = params["input"].clone();
+            let name = if method=="interaction/requestUserInput" {
+                input = json!({"questions":params["questions"].as_array().into_iter().flatten().map(|q|json!({"question":q["question"],"header":q["header"],"options":q["options"].as_array().into_iter().flatten().map(|o|json!({"label":o["label"],"description":o["description"]})).collect::<Vec<_>>(),"multiSelect":q["multiSelect"]==true})).collect::<Vec<_>>()});
+                "AskUserQuestion"
+            } else { params["toolName"].as_str().unwrap_or("Tool") };
+            let payload = json!({"id":key,"tool_name":name,"input":input,"reason":params["reason"],"nativeRequestId":frame["id"],"zcodeMethod":method,"zcodeQuestions":params["questions"]});
+            proc.permissions.lock().unwrap().insert(key,payload.clone());
+            emit(app,session,json!({"type":"permission","request":payload}));
+            super::emit_state(app,session,AgentState::Asking);
+        } else {
+            let _ = proc.write(&json!({"id":frame["id"],"error":{"code":-32601,"message":format!("VelaTerm 尚不支持 Zcode 宿主请求 {method}")}}));
+        }
+        return;
+    }
+    if method != "session/event" || proc.agent_session_id.lock().unwrap().as_deref() != params["sessionId"].as_str() { return; }
+    {
+        let mut state = proc.zcode.lock().unwrap();
+        if let Some(seq) = params["seq"].as_u64() {
+            if state.last_seq.is_some_and(|old|seq<=old) { return; }
+            state.last_seq = Some(seq);
+        }
+    }
+    let payload = &params["payload"];
+    match params["type"].as_str() {
+        Some("model.streaming") => {
+            // 原生 part 事件是持久化投影；同一流只消费 model.streaming，避免双计 delta。
+            let kind = payload["kind"].as_str().unwrap_or("");
+            if matches!(kind,"text_delta"|"reasoning_delta") {
+                let base = payload["partId"].as_str().or_else(||payload["assistantMessageId"].as_str()).unwrap_or("zcode-answer");
+                let id = if kind=="reasoning_delta" {format!("{base}:reasoning")}else{base.into()};
+                let mut buffers = proc.buffers.lock().unwrap();
+                let text = buffers.entry(id.clone()).or_default(); text.push_str(payload["delta"].as_str().unwrap_or(""));
+                let text = text.clone(); drop(buffers);
+                text_row(proc,&id,text,kind=="reasoning_delta",true);
+            }
+        }
+        Some("part.upserted") => apply_part(proc,&payload["part"],true),
+        Some("tool.updated") => apply_tool(proc,payload),
+        Some("turn.started") => { *proc.current_turn.lock().unwrap()=params["turnId"].as_str().map(str::to_string); }
+        Some("session.updated") => {
+            if let Some(snapshot) = payload.get("snapshot") { apply_snapshot(app,session,proc,snapshot,false); }
+        }
+        Some("turn.completed"|"turn.failed") => {
+            let failed = params["type"]=="turn.failed";
+            let input = payload["inputId"].as_str().map(str::to_string).or_else(||proc.zcode.lock().unwrap().current_input.clone());
+            if let Some(ref input) = input {
+                if !proc.zcode.lock().unwrap().completed.insert(input.clone()) { return; }
+            }
+            *proc.current_turn.lock().unwrap() = None;
+            let completed_rows=proc.timeline.lock().unwrap().rows.iter().filter_map(|row| {
+                let mut row=row.clone();
+                match &mut row {ChatRow::Assistant{streaming,..}|ChatRow::Reasoning{streaming,..} if *streaming=>{*streaming=false;Some(row)},_=>None}
+            }).collect::<Vec<_>>();
+            let had_stream=completed_rows.iter().any(|row|matches!(row,ChatRow::Assistant{..}));
+            for row in completed_rows {proc.timeline.lock().unwrap().upsert(row);}
+            if failed { emit(app,session,json!({"type":"error","message":payload["error"]["message"]})); }
+            else {
+                // 无流输出的原生结果仍然可见；已有流由终态统一结束。
+                let response = payload["response"].as_str().unwrap_or("");
+                if !response.is_empty() && !had_stream {
+                    text_row(proc,&format!("zcode:{}",input.as_deref().unwrap_or("result")),response.into(),false,false);
+                }
+                if payload["resultType"]=="success" {
+                    super::auth::turn_succeeded(app,session,proc);
+                    if let Some(input) = input { report(app,session,&input,response); }
+                }
+            }
+            let status = if !failed && matches!(payload["resultType"].as_str(),Some("success"|"cancelled")) {"success"}else{"zcode_failed"};
+            handle_turn_end(app,session,proc,status,payload["duration"].as_u64());
+        }
+        _ => {}
+    }
+}
+
+fn report(app: &AppCtx, session: &str, input: &str, text: &str) {
+    let round = app.db().conn.lock().unwrap().query_row("SELECT m.round FROM plan_execute_messages m JOIN plan_execute_runs r ON r.id=m.run_id WHERE m.id=?1 AND m.target_id=?2 AND r.executor_id=?2 AND m.action='dispatch'",rusqlite::params![input,session],|row|row.get::<_,u32>(0)).optional();
+    if let Ok(Some(round)) = round {
+        let hash=Sha256::digest(format!("zcode-report:{session}:{input}"));
+        let request=crate::agent::tell::Request{session_id:session.into(),target:None,report:true,steer:false,round:Some(round),message_id:format!("msg-{}",uuid::Uuid::from_bytes(hash[..16].try_into().unwrap())),text:text.into()};
+        if let Err(error)=crate::agent::plan_execute::report(app,&request,None) { emit(app,session,json!({"type":"error","message":format!("Zcode 工作流回传失败：{error}")})); }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn model_selection_preserves_native_reasoning_default() {
+        let choice=json!({"ref":{"providerId":"local","modelId":"coding"},"reasoning":{"defaultLevel":"medium","levels":[{"value":"medium"},{"value":"high"}]}});
+        assert_eq!(complete_selection(&choice,Some("unsupported"))["options"]["reasoningLevel"],"medium");
+        assert_eq!(complete_selection(&choice,Some("high"))["options"]["reasoningLevel"],"high");
+    }
+    #[test]
+    fn native_tool_lifecycle_keeps_arguments_and_finishes_one_card() {
+        let app=super::super::tests::ctx("zcode-tool");
+        let proc=super::super::tests::inert_process(SessionKind::Zcode);
+        *proc.agent_session_id.lock().unwrap()=Some("sess-native".into());
+        for (seq,(event,payload)) in [
+            ("model.streaming",json!({"kind":"tool_call","toolCallId":"call-1","toolName":"Bash","input":{"command":"echo CLI"}})),
+            ("tool.updated",json!({"kind":"scheduled","toolCallId":"call-1","toolName":"Bash","inputOmitted":true,"inputRef":"model_stream"})),
+            ("tool.updated",json!({"kind":"started","toolCallId":"call-1"})),
+            ("tool.updated",json!({"kind":"result","toolCallId":"call-1","result":{"content":"CLI","isError":false}})),
+        ].into_iter().enumerate() {
+            handle_line(&app,"s",&proc,&json!({"method":"session/event","params":{"sessionId":"sess-native","seq":seq+1,"type":event,"payload":payload}}).to_string());
+        }
+        let rows=proc.timeline.lock().unwrap().rows.clone();
+        assert_eq!(rows.len(),1);
+        assert!(matches!(&rows[0],ChatRow::Tool{name,input,output,status,..} if name=="Bash" && input["command"]=="echo CLI" && output.as_deref()==Some("CLI") && *status=="completed"));
+    }
+    #[test]
+    fn native_stream_is_routed_to_its_session_and_terminal_result_finishes_turn() {
+        let app=super::super::tests::ctx("zcode-protocol");
+        let proc=super::super::tests::inert_process(SessionKind::Zcode);
+        *proc.agent_session_id.lock().unwrap()=Some("sess-native".into());
+        proc.turn.lock().unwrap().running=true;
+        for native in ["sess-foreign","sess-native"] {
+            handle_line(&app,"s",&proc,&json!({"method":"session/event","params":{"sessionId":native,"seq":1,"type":"model.streaming","payload":{"kind":"text_delta","assistantMessageId":"answer","delta":"CLI_OK"}}}).to_string());
+        }
+        let rows=proc.timeline.lock().unwrap().rows.clone();
+        assert_eq!(rows.len(),1);
+        assert!(matches!(&rows[0],ChatRow::Assistant{text,streaming:true,..} if text=="CLI_OK"));
+        handle_line(&app,"s",&proc,&json!({"method":"session/event","params":{"sessionId":"sess-native","seq":2,"type":"turn.completed","payload":{"response":"CLI_OK","duration":9,"resultType":"success"}}}).to_string());
+        assert!(!proc.turn.lock().unwrap().running);
+        assert_eq!(proc.timeline.lock().unwrap().rows.len(),1);
+        assert!(matches!(&proc.timeline.lock().unwrap().rows[0],ChatRow::Assistant{streaming:false,..}));
+    }
+}

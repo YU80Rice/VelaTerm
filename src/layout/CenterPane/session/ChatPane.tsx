@@ -1897,10 +1897,11 @@ export function ChatPane({
   const permissionPending = permissionValue?.activation === "nextTurn" || permissionValue?.activation === "restart";
   const pendingMode = permissionPending ? permissionValue?.pending : null;
   const appliedMode = permissionValue?.running ? permissionValue?.current : null;
-  const modeLabel = isMode(mode) ? t(modeLabelKeyFor(session.kind, mode)) : mode;
+  const zcodeModeLabels: Record<string,string> = { build:"构建（逐项确认）", edit:"编辑（允许文件修改）", yolo:"自主执行" };
+  const modeLabel = session.kind === "zcode" && zcodeModeLabels[mode] ? zcodeModeLabels[mode] : isMode(mode) ? t(modeLabelKeyFor(session.kind, mode)) : mode;
   const modeOptions: ChipOption<string>[] = (permissionCatalog?.catalog?.modes ?? []).map((value) => ({
     value,
-    label: t(modeLabelKeyFor(session.kind, value)),
+    label: session.kind === "zcode" && zcodeModeLabels[value] ? zcodeModeLabels[value] : t(modeLabelKeyFor(session.kind, value)),
     // The effective row is noted only while it differs from the target being waited on; on its own,
     // "Applied" says nothing the chip has not already said.
     tag: pendingMode && value === pendingMode
@@ -2086,8 +2087,8 @@ export function ChatPane({
     />
   ) });
   // The account menu disables itself while a sign-in is unresolved; the inline panel handles that flow.
-  if (session.kind === "codex" || session.kind === "claude") composerChips.push({ id: "account", node: (
-    <AgentAccountMenu provider={session.kind === "claude" ? "Claude" : "Codex"} sessionId={session.id} state={extras.auth} busy={turnStartedAt !== undefined} />
+  if (session.kind === "codex" || session.kind === "claude" || session.kind === "zcode") composerChips.push({ id: "account", node: (
+    <AgentAccountMenu provider={session.kind === "zcode" ? "Zcode" : session.kind === "claude" ? "Claude" : "Codex"} sessionId={session.id} state={extras.auth} busy={turnStartedAt !== undefined} />
   ) });
   if (session.kind === "codex") composerChips.push({ id: "codexCredits", node: <CodexResetCredits /> });
 
@@ -2314,7 +2315,7 @@ export function ChatPane({
                   because the row's own left indent replaces the auto margins that center it. */}
               {error && !isAgentNotInstalledError(error) && <div className="sv-item"><ErrorRow message={error} /></div>}
               {catalogueError && <div className="sv-item"><ErrorRow message={catalogueError} /></div>}
-              {(session.kind === "codex" || session.kind === "claude") && !readOnly && <AgentAuth provider={session.kind === "claude" ? "Claude" : "Codex"} sessionId={session.id} state={extras.auth} busy={turnStartedAt !== undefined} />}
+              {(session.kind === "codex" || session.kind === "claude" || session.kind === "zcode") && !readOnly && <AgentAuth provider={session.kind === "zcode" ? "Zcode" : session.kind === "claude" ? "Claude" : "Codex"} sessionId={session.id} state={extras.auth} busy={turnStartedAt !== undefined} />}
             </div>
             <UserMessageRail key={session.id} items={railItems} order={messageOrder} scrollRef={scrollRef} enabled={syncState === "ready" && !hidden && !(searchOpen && focused)}
               pendingId={railJump.pendingId} error={railJump.error} onCancel={railJump.cancel} onSelect={id => {

@@ -14,6 +14,7 @@ export function AgentPermissionSelect({ kind, value, onChange }: {
   kind: SessionKind; value?: string | null; onChange: (mode: string) => void | Promise<void>;
 }) {
   const t = useT();
+  const nativeLabels: Record<string,string> = { build:"构建（逐项确认）", edit:"编辑（允许文件修改）", yolo:"自主执行" };
   const state = useAgentPermissions(kind, value);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
@@ -25,7 +26,7 @@ export function AgentPermissionSelect({ kind, value, onChange }: {
       ariaLabel={t("info.permission")}
       placeholder={state?.error ? "—" : t("common.loading")}
       disabled={busy || !state?.catalog}
-      options={state?.catalog?.modes.map(mode => ({ value: mode, label: t(permissionLabelKey(mode)) })) ?? []}
+      options={state?.catalog?.modes.map(mode => ({ value: mode, label: nativeLabels[mode] ?? t(permissionLabelKey(mode)) })) ?? []}
       onChange={mode => {
         setBusy(true); setError(undefined);
         void Promise.resolve().then(() => onChange(mode)).catch(e => setError(String(e))).finally(() => setBusy(false));

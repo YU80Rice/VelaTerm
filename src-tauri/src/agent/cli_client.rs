@@ -150,7 +150,7 @@ pub fn run_view(args: &[String]) -> ! {
 }
 
 const SPAWN_USAGE: &str =
-    "usage: vspawn [--worktree] [--cwd <path>] [--yes] [--claude|--codex|--copilot|--kiro] [--model <name>] [--effort <level>] <task description...>\n\
+    "usage: vspawn [--worktree] [--cwd <path>] [--yes] [--claude|--codex|--zcode|--copilot|--kiro] [--model <name>] [--effort <level>] <task description...>\n\
     --plan-execute    create planning, execution and optional independent review chat sessions\n\
     --split-tasks     let the planner propose multiple tasks for user confirmation (requires --plan-execute)\n\
     --worktree-mode <none|shared|each>   directory mode for all workflow roles; overrides --worktree (requires --plan-execute)\n\
@@ -304,6 +304,7 @@ fn parse_spawn_args(rest: &[String]) -> SpawnParse {
             "--yes" | "-y" | "--no-confirm" => no_confirm = true,
             "--claude" => kind = Some("claude".to_string()),
             "--codex" => kind = Some("codex".to_string()),
+            "--zcode" => kind = Some("zcode".to_string()),
             "--copilot" => kind = Some("copilot".to_string()),
             "--kiro" => kind = Some("kiro".to_string()),
             "-h" | "--help" => return SpawnParse::Help,
@@ -1607,6 +1608,13 @@ fn refer_http_timeout(args: &ReferArgs) -> std::time::Duration {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn spawn_zcode_selects_the_independent_agent() {
+        let SpawnParse::Ok(parsed) = parse_spawn_args(&args(&["--zcode", "执行独立任务"])) else { panic!("Zcode CLI selection must be accepted") };
+        assert_eq!(parsed.kind.as_deref(), Some("zcode"));
+        assert_eq!(parsed.prompt, "执行独立任务");
+    }
 
     fn args(rest: &[&str]) -> Vec<String> {
         rest.iter().map(|s| s.to_string()).collect()

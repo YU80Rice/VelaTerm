@@ -261,7 +261,8 @@ fn launch_defaults(app: &AppCtx, conn: &Connection, parent: Option<&Session>, ki
     let args = same.and_then(|p| p.agent_args.clone()).or_else(|| prefs["agentDefaults"][kind.as_str()]["args"].as_str().map(str::to_owned));
     let permission = permission_catalog::effective(conn, kind, same.and_then(|p| p.permission_mode.as_deref()))?;
     permission_catalog::validate(kind, permission.as_deref())?;
-    let engine = if !kind.supports_chat() { "tui" }
+    let engine = if kind == SessionKind::Zcode { "chat" }
+        else if !kind.supports_chat() { "tui" }
         else if let Some(parent) = parent.filter(|p| p.kind.supports_chat()) { &parent.engine }
         else { prefs["agentDefaults"][kind.as_str()]["engine"].as_str().unwrap_or("chat") };
     let _ = app;

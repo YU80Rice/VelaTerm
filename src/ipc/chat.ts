@@ -351,7 +351,7 @@ export interface ChatAuthState {
   userCode?: string;
 }
 
-export const chatAuthStart = (sessionId: string) => invoke<void>("chat_auth_start", { sessionId });
+export const chatAuthStart = (sessionId: string, provider?: "zai" | "bigmodel") => invoke<void>("chat_auth_start", { sessionId, provider });
 export const chatAuthLogout = (sessionId: string) => invoke<void>("chat_auth_logout", { sessionId });
 export const chatAuthSubmit = (sessionId: string, code: string) => invoke<void>("chat_auth_submit", { sessionId, code });
 export const chatAuthCancel = (sessionId: string) => invoke<void>("chat_auth_cancel", { sessionId });

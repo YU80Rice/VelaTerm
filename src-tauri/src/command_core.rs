@@ -836,6 +836,26 @@ pub fn read_agent_transcript(
     session_id: &str,
 ) -> Result<Vec<crate::agent::transcript::TranscriptMessage>, String> {
     let (kind, agent_id) = session_kind_and_agent(ctx, session_id)?;
+    if kind == SessionKind::Zcode {
+        // 原生 CLI 历史归 Zcode 管理；父会话读取已投影的消息。
+        let snapshot = ctx.chat().snapshot(session_id);
+        if snapshot.pid.is_some() {
+            use crate::agent::chat::engine::ChatRow;
+            return Ok(snapshot.rows.into_iter().filter_map(|row| {
+                let (role, text) = match row {
+                    ChatRow::User { text, .. } => ("user", text),
+                    ChatRow::Assistant { text, .. } => ("assistant", text),
+                    _ => return None,
+                };
+                Some(crate::agent::transcript::TranscriptMessage {
+                    role: role.into(), text, timestamp: None, tools: Vec::new(),
+                })
+            }).collect());
+        }
+        let session=repo::get_session(&ctx.db().conn.lock().unwrap(),session_id)?.ok_or("Session not found")?;
+        let bin=crate::agent::executable::for_session(ctx,&session);
+        return crate::agent::zcode_cli::transcript(&bin,session.cwd.as_deref(),&agent_id);
+    }
     crate::agent::transcript::read(kind, &agent_id)
 }
 
@@ -846,6 +866,9 @@ pub fn read_agent_transcript(
 /// The conversation itself is untouched — both engines read and write the same recording — so the next
 /// launch picks up where the last one stopped.
 pub fn set_session_engine(ctx: &AppCtx, session_id: &str, engine: &str) -> Result<(), String> {
+    if engine != "chat" && repo::get_session(&ctx.db().conn.lock().unwrap(), session_id)?.is_some_and(|s|s.kind == SessionKind::Zcode) {
+        return Err("当前 Zcode 无头 CLI 集成使用对话模式".into());
+    }
     if !matches!(engine, "tui" | "chat") {
         return Err(format!("Unknown session engine: {engine}"));
     }
@@ -1068,8 +1091,12 @@ pub fn chat_set_personality(
 
 /// Begin provider-managed authorization in the existing conversation.
 pub fn chat_auth_start(ctx: &AppCtx, session_id: &str) -> Result<(), String> {
+    chat_auth_start_provider(ctx,session_id,None)
+}
+
+pub fn chat_auth_start_provider(ctx: &AppCtx, session_id: &str, provider: Option<&str>) -> Result<(), String> {
     prepare_chat_account(ctx, session_id)?;
-    ctx.chat().auth_start(ctx, session_id)
+    ctx.chat().auth_start_provider(ctx,session_id,provider)
 }
 
 pub fn chat_auth_logout(ctx: &AppCtx, session_id: &str) -> Result<(), String> {
@@ -1081,11 +1108,11 @@ fn prepare_chat_account(ctx: &AppCtx, session_id: &str) -> Result<(), String> {
     {
         let conn = ctx.db().conn.lock().unwrap();
         let session = repo::get_session(&conn, session_id)?.ok_or("Session not found")?;
-        if !matches!(session.kind, SessionKind::Codex | SessionKind::Claude)
+        if !matches!(session.kind, SessionKind::Codex | SessionKind::Claude | SessionKind::Zcode)
             || session.engine != "chat"
         {
             return Err(
-                "Account operations are available only in Claude or Codex chat sessions.".into(),
+                "账户操作仅适用于 Claude、Codex 或 Zcode 对话会话。".into(),
             );
         }
     }
@@ -1477,6 +1504,7 @@ pub fn chat_set_model(ctx: &AppCtx, session_id: &str, model: Option<&str>) -> Re
         ctx.chat()
             .set_model(session_id, selection.model.as_deref())?;
         selection.model = ctx.chat().snapshot(session_id).model;
+        if session.kind==SessionKind::Zcode {selection.effort=ctx.chat().snapshot(session_id).effort;}
     }
     session_settings::persist(ctx, &session, &selection)?;
     ctx.emit(
@@ -1504,6 +1532,7 @@ pub fn chat_set_effort(ctx: &AppCtx, session_id: &str, effort: Option<&str>) -> 
     if ctx.chat().is_alive(session_id) {
         ctx.chat()
             .set_effort(ctx, session_id, selection.effort.as_deref())?;
+        if session.kind==SessionKind::Zcode {selection.effort=ctx.chat().snapshot(session_id).effort;}
     }
     session_settings::persist(ctx, &session, &selection)?;
     ctx.emit(
@@ -1526,6 +1555,9 @@ pub fn chat_models(ctx: &AppCtx, session_id: &str) -> Result<serde_json::Value, 
             serde_json::to_value(models.into_iter().map(|id| serde_json::json!({
                 "label":id,"id":id,"description":"","effortLevels":crate::agent::chat::antigravity_protocol::EFFORTS,
             })).collect::<Vec<_>>())
+        }
+        SessionKind::Zcode => {
+            serde_json::to_value(ctx.chat().live_zcode_models(session_id))
         }
         // Live capabilities enrich the complete catalogue; the CLI picker only lists a subset. What a
         // running conversation reports is kept, so a session that is not running still offers the models

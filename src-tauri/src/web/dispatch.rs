@@ -757,7 +757,7 @@ fn dispatch_inner(app: &AppCtx, cmd: &str, args: &Value, source: &str, origin: C
                 personality.as_deref(),
             )?)
         }
-        "chat_auth_start" => to_value(core::chat_auth_start(app, &req_str(args, "sessionId")?)?),
+        "chat_auth_start" => to_value(core::chat_auth_start_provider(app, &req_str(args, "sessionId")?, args.get("provider").and_then(Value::as_str))?),
         "chat_auth_logout" => to_value(core::chat_auth_logout(app, &req_str(args, "sessionId")?)?),
         "chat_auth_submit" => to_value(core::chat_auth_submit(app, &req_str(args, "sessionId")?, &req_str(args, "code")?)?),
         "chat_auth_cancel" => to_value(core::chat_auth_cancel(app, &req_str(args, "sessionId")?)?),
