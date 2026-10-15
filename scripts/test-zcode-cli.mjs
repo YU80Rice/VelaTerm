@@ -23,7 +23,8 @@ await Promise.all([mkdir(workspace), mkdir(profile), mkdir(path.join(nativeRoot,
 // Windows 会话会重建系统环境。仅在测试 wrapper 中指定 profile，避免加载个人 hooks。
 const wrapper = path.join(root, 'fixture-zcode.cmd');
 const environmentLog = path.join(root, 'launch-profiles.txt');
-await writeFile(wrapper, '@echo off\r\n>> "%VELA_ZCODE_ENV_LOG%" echo("%USERPROFILE%"\r\nset "USERPROFILE=%VELA_ZCODE_TEST_PROFILE%"\r\n"%VELA_ZCODE_TEST_BINARY%" %*\r\n');
+// 0.2.10 还会单独执行 --version；该探测不读取历史，不属于 app-server 环境比较。
+await writeFile(wrapper, '@echo off\r\nif /I "%~1"=="app-server" >> "%VELA_ZCODE_ENV_LOG%" echo("%USERPROFILE%"\r\nset "USERPROFILE=%VELA_ZCODE_TEST_PROFILE%"\r\n"%VELA_ZCODE_TEST_BINARY%" %*\r\n');
 const modelServer = createServer(async (request, response) => {
   let raw = '';
   for await (const chunk of request) raw += chunk;
