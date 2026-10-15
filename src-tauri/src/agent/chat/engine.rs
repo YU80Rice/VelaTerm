@@ -3324,7 +3324,10 @@ fn prune_finished_tasks(extras: &mut ClaudeExtras) -> bool {
 /// reports the exit as released, which is what keeps a client that still shows the pane from drawing an
 /// error for it.
 fn release_process(app: &AppCtx, session_id: &str, proc: &Arc<ChatProcess>) {
-    if proc.kind == SessionKind::Zcode { auth::zcode::stop(proc); }
+    if proc.kind == SessionKind::Zcode {
+        auth::zcode::stop(proc);
+        zcode::clear_interactions(app, session_id, proc);
+    }
     proc.release_when_idle.store(false, Ordering::Relaxed);
     proc.released.store(true, Ordering::Relaxed);
     proc.alive.store(false, Ordering::Relaxed);
@@ -3675,6 +3678,7 @@ fn spawn_stdout_reader(
         if superseded || app.chat().permission_restarts.lock().unwrap().contains(&session_id) {
             return;
         }
+        if proc.kind == SessionKind::Zcode { zcode::clear_interactions(&app, &session_id, &proc); }
         crate::session_state::set_alive(&app, &session_id, false);
         end_background_tasks(&mut proc.extras.lock().unwrap());
         emit_extras(&app, &session_id, &proc);

@@ -34,6 +34,8 @@ sequenceDiagram
 
 原生终态的 `inputId` 可以省略，必须结合原生 `turnId` 验证归属；旧回合的重复事件不能结束后来派发的回合。交互选项保留独立的 `label` 与 `value`，界面显示标签、提交原生值；自由文本不做选项值猜测。
 
+交互卡片按业务 `requestId` 去重，重宣时只更新传输请求 ID。原生 `permission.resolved`、回合终态和进程退出都应撤销失效卡片。原生工具发出的模式变更也属于权威状态：`session.updated` 中的 `mode`、`planEnabled` 必须投影到界面，不能只处理完整 snapshot。
+
 ## 账户与权限
 
 账户菜单支持 BigModel 与 Z.AI。VelaTerm 调用原生 `login <provider> --no-browser --json`，只显示授权链接和状态；账户 JSON 不写入聊天或诊断。用户在浏览器完成授权，凭据由 CLI 自己保存。成功登录后恢复同一原生会话，使进程重新装配账户状态。

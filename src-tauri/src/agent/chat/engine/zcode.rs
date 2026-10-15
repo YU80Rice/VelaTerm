@@ -187,6 +187,20 @@ pub(super) fn respond(app: &AppCtx, session: &str, proc: &Arc<ChatProcess>, id: 
     Ok(())
 }
 
+pub(super) fn clear_interactions(app: &AppCtx, session: &str, proc: &ChatProcess) {
+    let ids: Vec<_> = proc.permissions.lock().unwrap().drain().map(|(id, _)| id).collect();
+    for id in ids { emit(app,session,json!({"type":"permissionResolved","id":id})); }
+}
+
+fn apply_mode(app: &AppCtx, session: &str, proc: &ChatProcess, settings: &Value) {
+    let mode = if settings["planEnabled"] == true { Some("plan") }
+        else { settings["mode"].as_str().or_else(||settings["mode"]["current"].as_str()) };
+    if let Some(mode) = mode {
+        *proc.mode.lock().unwrap() = mode.into();
+        emit(app,session,json!({"type":"settingsChanged","mode":mode}));
+    }
+}
+
 pub(super) fn handle_line(app: &AppCtx, session: &str, proc: &Arc<ChatProcess>, line: &str) {
     let Ok(frame) = serde_json::from_str::<Value>(line) else { return; };
     if frame.get("id").is_some() && frame.get("method").is_none() {
@@ -211,7 +225,9 @@ pub(super) fn handle_line(app: &AppCtx, session: &str, proc: &Arc<ChatProcess>, 
             if native.as_deref() != params["sessionId"].as_str() {
                 let _ = proc.write(&json!({"id":frame["id"],"error":{"code":-32602,"message":"会话不匹配"}})); return;
             }
-            let key = frame["id"].as_str().map(str::to_owned).unwrap_or_else(||frame["id"].to_string());
+            // 重发使用新的传输帧 ID；卡片身份必须跟随稳定的业务 requestId。
+            let key = params["requestId"].as_str().map(str::to_owned)
+                .unwrap_or_else(||frame["id"].as_str().map(str::to_owned).unwrap_or_else(||frame["id"].to_string()));
             let mut input = params["input"].clone();
             let name = if method=="interaction/requestUserInput" {
                 input = json!({"questions":params["questions"].as_array().into_iter().flatten().map(|q|json!({"question":q["question"],"header":q["header"],"options":q["options"].as_array().into_iter().flatten().map(|o|json!({"label":o["label"],"description":o["description"],"value":o["value"]})).collect::<Vec<_>>(),"multiSelect":q["multiSelect"]==true})).collect::<Vec<_>>()});
@@ -226,7 +242,12 @@ pub(super) fn handle_line(app: &AppCtx, session: &str, proc: &Arc<ChatProcess>, 
         }
         return;
     }
-    if method != "session/event" || proc.agent_session_id.lock().unwrap().as_deref() != params["sessionId"].as_str() { return; }
+    if proc.agent_session_id.lock().unwrap().as_deref() != params["sessionId"].as_str() { return; }
+    if method == "state.updated" {
+        apply_mode(app,session,proc,&params["patch"]);
+        return;
+    }
+    if method != "session/event" { return; }
     {
         let mut state = proc.zcode.lock().unwrap();
         if let Some(seq) = params["seq"].as_u64() {
@@ -259,6 +280,15 @@ pub(super) fn handle_line(app: &AppCtx, session: &str, proc: &Arc<ChatProcess>, 
         }
         Some("session.updated") => {
             if let Some(snapshot) = payload.get("snapshot") { apply_snapshot(app,session,proc,snapshot,false); }
+            // 工具驱动的模式变化只携带原生 mode/planEnabled，不附带 snapshot。
+            apply_mode(app,session,proc,payload);
+        }
+        Some("permission.resolved") => {
+            let id = payload["requestId"].as_str().or_else(||payload["toolCallId"].as_str());
+            if let Some(id) = id {
+                proc.permissions.lock().unwrap().remove(id);
+                emit(app,session,json!({"type":"permissionResolved","id":id}));
+            }
         }
         Some("turn.completed"|"turn.failed") => {
             let failed = params["type"]=="turn.failed";
@@ -279,6 +309,7 @@ pub(super) fn handle_line(app: &AppCtx, session: &str, proc: &Arc<ChatProcess>, 
                 input
             };
             *proc.current_turn.lock().unwrap() = None;
+            clear_interactions(app,session,proc);
             let completed_rows=proc.timeline.lock().unwrap().rows.iter().filter_map(|row| {
                 let mut row=row.clone();
                 match &mut row {ChatRow::Assistant{streaming,..}|ChatRow::Reasoning{streaming,..} if *streaming=>{*streaming=false;Some(row)},_=>None}
@@ -316,6 +347,37 @@ fn report(app: &AppCtx, session: &str, input: &str, text: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn native_interaction_reannouncement_and_terminal_keep_one_live_card() {
+        let app = super::super::tests::ctx("zcode-interaction-owner");
+        let proc = super::super::tests::inert_process(SessionKind::Zcode);
+        *proc.agent_session_id.lock().unwrap() = Some("sess-native".into());
+        proc.turn.lock().unwrap().running = true;
+        for id in ["server-1", "server-2"] {
+            handle_line(&app,"s",&proc,&json!({"id":id,"method":"interaction/requestPermission","params":{
+                "sessionId":"sess-native","requestId":"permission-1","toolName":"Write","input":{"content":"test"}
+            }}).to_string());
+        }
+        assert_eq!(proc.permissions.lock().unwrap().len(), 1, "重宣同一交互不能生成多张卡片");
+        assert_eq!(proc.permissions.lock().unwrap()["permission-1"]["nativeRequestId"], "server-2");
+        handle_line(&app,"s",&proc,&json!({"method":"session/event","params":{
+            "sessionId":"sess-native","seq":1,"turnId":"turn-1","type":"turn.completed","payload":{"resultType":"cancelled"}
+        }}).to_string());
+        assert!(proc.permissions.lock().unwrap().is_empty(), "终态必须撤销不再有效的交互");
+    }
+
+    #[test]
+    fn native_mode_events_project_tool_driven_plan_transitions() {
+        let app = super::super::tests::ctx("zcode-mode-owner");
+        let proc = super::super::tests::inert_process(SessionKind::Zcode);
+        *proc.agent_session_id.lock().unwrap() = Some("sess-native".into());
+        for (seq, planned, expected) in [(1,true,"plan"),(2,false,"build")] {
+            handle_line(&app,"s",&proc,&json!({"method":"session/event","params":{
+                "sessionId":"sess-native","seq":seq,"type":"session.updated","payload":{"mode":"build","planEnabled":planned,"source":"tool"}
+            }}).to_string());
+            assert_eq!(*proc.mode.lock().unwrap(), expected);
+        }
+    }
     #[test]
     fn repeated_old_terminal_cannot_finish_the_next_input() {
         let app = super::super::tests::ctx("zcode-terminal-owner");

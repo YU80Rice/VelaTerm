@@ -138,9 +138,19 @@ try {
   const denied = await create();
   await call('chat_send', { sessionId: denied, text: 'DENIAL' });
   const deny = await until(() => call('chat_snapshot', { sessionId: denied }), snapshot => snapshot.permissions.length, '工具权限确认');
+  await delay(2200);
+  const repeated = await call('chat_snapshot', { sessionId: denied });
+  assert.equal(repeated.permissions.length, 1, '原生交互重发应保留一张卡片');
+  assert.equal(repeated.permissions[0].id, deny.permissions[0].id);
   await call('chat_permission', { sessionId: denied, requestId: deny.permissions[0].id, allow: false, message: '测试拒绝' });
   await finished(denied);
   await assert.rejects(readFile(path.join(workspace, 'blocked.txt')), { code: 'ENOENT' });
+  const cancelled = await create();
+  await call('chat_send', { sessionId: cancelled, text: 'DENIAL' });
+  const pendingPermission = await until(() => call('chat_snapshot', { sessionId: cancelled }), snapshot => snapshot.permissions.length, '中断前的待确认卡片');
+  await call('chat_interrupt', { sessionId: cancelled });
+  await until(() => call('chat_snapshot', { sessionId: cancelled }), snapshot => !snapshot.turnStartedAt && !snapshot.permissions.length, '中断清除待确认卡片');
+  await assert.rejects(call('chat_permission', { sessionId: cancelled, requestId: pendingPermission.permissions[0].id, allow: true }));
   const planner = await create();
   await call('chat_set_mode', { sessionId: planner, mode: 'plan' });
   await call('chat_send', { sessionId: planner, text: 'PLAN_REVIEW' });
@@ -151,6 +161,7 @@ try {
   await call('chat_permission', { sessionId: planner, requestId: question.id, allow: true, updatedInput: { ...question.input, answers: { [plan.question]: plan.options[0].value } } });
   const approved = await finished(planner);
   assert(approved.rows.some(row => row.kind === 'tool' && row.name === 'ExitPlanMode' && row.status === 'completed' && !row.isError));
+  assert.equal(approved.mode, 'build', '原生计划批准后，界面必须反映实际权限模式');
   await call('chat_send', { sessionId: beta, text: 'STALL' });
   await delay(500);
   await call('chat_interrupt', { sessionId: beta });
