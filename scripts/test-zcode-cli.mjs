@@ -182,7 +182,17 @@ const stopOwnedProcess = async child => {
   let report='';
   for (const stream of [killer.stdout,killer.stderr]) stream.on('data',bytes=>{report=(report+bytes.toString()).slice(-2048);});
   await bounded(new Promise((resolve, reject) => { killer.once('exit', resolve); killer.once('error', reject); }), 15000, '测试进程树停止超时');
-  if (child.exitCode === null && child.signalCode === null) await bounded(new Promise(resolve => child.once('exit', resolve)), 5000, `测试进程未退出 ${child.pid}: ${report}`);
+  // Windows 进程已消失时，ChildProcess 的 exit 通知仍可能迟到；按系统实际 PID 验证，不能把迟到通知误报为残留。
+  const end=Date.now()+15000;
+  do {
+    const query=spawn(path.join(process.env.SystemRoot ?? 'C:/Windows','System32/tasklist.exe'),['/FI',`PID eq ${child.pid}`,'/FO','CSV','/NH'],{windowsHide:true,stdio:['ignore','pipe','pipe']});
+    let output='';query.stdout.on('data',bytes=>{output+=bytes.toString()});query.stderr.resume();
+    const code=await bounded(new Promise((resolve,reject)=>{query.once('exit',resolve);query.once('error',reject)}),5000,'测试进程状态查询超时');
+    if(code!==0) throw Error('无法确认测试进程状态');
+    if(!output.includes(`","${child.pid}",`)) return;
+    await delay(100);
+  } while(Date.now()<end);
+  throw Error(`测试进程未退出 ${child.pid}: ${report}`);
 };
 const parityImage = 'iVBORw0KGgoAAAANSUhEUgAAAAQAAAAECAIAAAAmkwkpAAAAE0lEQVR4nGPUqDjBAANMcBZeDgBGtAFwfeO9fAAAAABJRU5ErkJggg==';
 const until = async (read, accept, label, timeout = 45000) => {
@@ -489,9 +499,11 @@ try {
 } finally {
   if (call && socket?.readyState === WebSocket.OPEN) await bounded(Promise.allSettled(sessions.map(sessionId => call('chat_stop', { sessionId }))), 12000, '测试会话停止超时').catch(() => {});
   socket?.close();
-  for (const child of ownedProcesses) await stopOwnedProcess(child);
+  const stopped=await Promise.allSettled(Array.from(ownedProcesses,stopOwnedProcess));
   modelServer.closeAllConnections();
   await bounded(new Promise(resolve => modelServer.close(resolve)), 5000, '本地模型测试服务停止超时');
+  const failures=stopped.filter(result=>result.status==='rejected').map(result=>result.reason);
+  if(failures.length) throw new AggregateError(failures,'测试进程清理失败');
 }
 
 }
