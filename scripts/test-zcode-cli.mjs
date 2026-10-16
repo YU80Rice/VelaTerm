@@ -163,6 +163,9 @@ try {
   const noLoginPlan = await call('chat_zcode_start_plan', { sessionId: cold });
   assert(noLoginPlan.plans.length > 0 && noLoginPlan.plans.every(plan => plan.status === 'not-authenticated'), '未登录时需给出明确的 Start Plan 状态');
   const coldModels = await call('chat_models', { sessionId: cold });
+  const launchModels = await call('launch_models', { kind: 'zcode', context: { parentSessionId: parent.id, cwd: workspace } });
+  assert.deepEqual(launchModels.models.map(({ id, effortLevels }) => ({ id, effortLevels })),
+    coldModels.map(({ id, effortLevels }) => ({ id, effortLevels })), '启动模型菜单必须保留原生逐模型思考档位');
   assert(coldModels.some(model => model.id === 'local-fixture/gpt-4o-mini' && model.description.includes('Local fixture')), '首次启动前模型菜单必须显示原生模型和供应商');
   assert(!(await call('list_tree')).sessions.find(session => session.id === cold).agentSessionId, '目录查询不能绑定临时原生会话');
   const coldBrowserUI = await checkZcodeBrowser({ base, token, sessionName: (await call('list_tree')).sessions.find(session => session.id === cold).name, root, cold: true });

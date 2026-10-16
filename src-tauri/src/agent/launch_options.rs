@@ -55,7 +55,8 @@ pub fn catalog() -> Vec<LaunchOption> {
             &["low", "medium", "high", "xhigh", "max"],
         ),
         (Codex, "Codex", Some("model_reasoning_effort"), &[]),
-        (Zcode, "Zcode", None, &[]),
+        // 仅作启动选择的持久格式；启动原生 app-server 前转为 RPC 参数并剥离。
+        (Zcode, "Zcode", Some("--effort"), &[]),
         (Opencode, "OpenCode", Some("--variant"), &[]),
         (
             Copilot,
@@ -315,6 +316,16 @@ pub fn apply_selection(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn zcode_spawn_choices_include_native_reasoning_effort() {
+        let spec = catalog().into_iter().find(|option| option.id == SessionKind::Zcode).unwrap();
+        assert_eq!(spec.effort_flag, Some("--effort"));
+        let args = apply(SessionKind::Zcode, None, Some("deepseek/deepseek-flash"), Some("max")).unwrap();
+        let chosen = selection(SessionKind::Zcode, args.as_deref());
+        assert_eq!(chosen.model, "deepseek/deepseek-flash");
+        assert_eq!(chosen.effort, "max");
+    }
 
     #[test]
     fn codex_effort_choices_round_trip_and_default_clears_the_override() {

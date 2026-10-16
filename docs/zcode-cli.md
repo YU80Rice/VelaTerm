@@ -12,6 +12,8 @@ VelaTerm 不内置账户凭据或固定模型。可在智能体设置中指定 C
 
 ZCode CLI 拥有账户、模型配置、原生会话历史、任务执行和权限判断。VelaTerm 拥有进程生命周期、树节点到原生会话 ID 的映射，以及界面投影。一个 VelaTerm Zcode 会话使用一个独立 CLI 进程。
 
+子会话可通过 `vspawn --zcode --model deepseek/deepseek-flash --effort max --yes "请回报模型名称并回复你好，不使用工具"` 原生派发。模型 ID 和思考档位以当前 CLI 返回的目录为准；启动菜单保留逐模型档位。保存的 `--model` / `--effort` 由宿主转换为原生会话 RPC 选择，启动 app-server 时剥离这两个参数。`--yes` 跳过初始确认，正常自动启动期间不弹确认卡；启动失败仍显示错误和显式重试入口，不能把确认跳过解释为忽略错误。
+
 ```mermaid
 sequenceDiagram
     participant V as VelaTerm

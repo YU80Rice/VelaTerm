@@ -660,6 +660,20 @@ mod tests {
         let receipt = register(&f.app, req.clone()).unwrap();
         decide(&f.app, "test", &receipt.request_id, true, Some(req)).unwrap()
     }
+
+    #[test]
+    fn zcode_launch_preparation_keeps_explicit_model_and_max_effort() {
+        let f = fixture();
+        let mut req = request(&f, false);
+        req.kind = Some("zcode".into());
+        req.model = Some("deepseek/deepseek-flash".into());
+        req.effort = Some("max".into());
+        req.no_confirm = true;
+        let launch = prepare_launch(&f.app, &req).unwrap();
+        assert_eq!(launch.kind, SessionKind::Zcode);
+        assert_eq!(launch.selection.model.as_deref(), Some("deepseek/deepseek-flash"));
+        assert_eq!(launch.selection.effort.as_deref(), Some("max"));
+    }
     fn owned(f: &Fixture, id: &str) -> OwnedWorktree {
         let raw: String = f.app.db().conn.lock().unwrap().query_row("SELECT receipt FROM spawn_worktrees WHERE id=?1", [id], |r| r.get(0)).unwrap();
         decoded(&raw).unwrap()
