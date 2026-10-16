@@ -63,6 +63,25 @@ export async function checkZcodeBrowser({ base, token, sessionName, root, cold =
     await send('Runtime.enable');
     await send('Page.enable');
     await send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1000, deviceScaleFactor: 1, mobile: false });
+    const checkExtensions = async () => {
+      await send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
+      await send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
+      await evaluate(`(()=>{const input=document.querySelector('.sv-box textarea');Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set.call(input,'/plugin-');input.dispatchEvent(new Event('input',{bubbles:true}));input.focus();input.setSelectionRange(8,8);input.dispatchEvent(new Event('select',{bubbles:true}));})()`);
+      await until(() => evaluate(`Array.from(document.querySelectorAll('.sv-complete-item')).some(row=>row.textContent.includes('plugin-probe'))`), Boolean, '原生插件技能补全');
+      let shot = await send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false });
+      await writeFile(path.join(root, cold ? 'zcode-cold-skills.png' : 'zcode-live-skills.png'), Buffer.from(shot.data, 'base64'));
+      await evaluate(`(()=>{const input=document.querySelector('.sv-box textarea');Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set.call(input,'');input.dispatchEvent(new Event('input',{bubbles:true}));})()`);
+      if (cold) return;
+      await evaluate(`(()=>{if(!Array.from(document.querySelectorAll('button.sv-chip')).some(row=>row.textContent.includes('MCP')&&getComputedStyle(row).visibility!=='hidden')){document.querySelector('button.sv-more-toggle')?.click()}})()`);
+      await until(() => evaluate(`Array.from(document.querySelectorAll('button.sv-chip')).some(row=>row.textContent.includes('MCP')&&!row.disabled&&getComputedStyle(row).visibility!=='hidden')`), Boolean, 'Zcode MCP 菜单');
+      await evaluate(`Array.from(document.querySelectorAll('button.sv-chip')).find(row=>row.textContent.includes('MCP')).click()`);
+      await until(() => evaluate(`document.body.innerText.includes('extension-local')&&document.body.innerText.includes('extension-broken')`), Boolean, '显示配置探测与连接失败');
+      assert(await evaluate(`/separate CLI|独立 CLI/.test(document.body.innerText)`), '成品应明确独立探测语义');
+      shot = await send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false });
+      await writeFile(path.join(root, 'zcode-mcp-menu.png'), Buffer.from(shot.data, 'base64'));
+      await send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
+      await send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
+    };
     await send('Page.addScriptToEvaluateOnNewDocument', { source: `if(location.origin===${JSON.stringify(base)})sessionStorage.setItem('vlx-token',${JSON.stringify(token)});` });
     const selectSession = async () => {
       await until(() => evaluate(`Array.from(document.querySelectorAll('.nm')).some(n=>n.textContent===${JSON.stringify(sessionName)})`), Boolean, '独立 Zcode 会话树节点');
@@ -97,12 +116,14 @@ export async function checkZcodeBrowser({ base, token, sessionName, root, cold =
       assert(!await evaluate(`document.body.innerText.includes('UI_RENDER_OK')`), '空白菜单验收必须发生在首次发送之前');
       const screenshot = await send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false });
       await writeFile(path.join(root, 'zcode-cold-model-menu.png'), Buffer.from(screenshot.data, 'base64'));
+      await checkExtensions();
       assert.deepEqual(exceptions, []);
       await writeFile(path.join(root, 'cold-browser-result.json'), JSON.stringify({ modelMenu: true, providerHint: true, beforeFirstStart: true, uncaughtExceptions: exceptions, embeddedFrontend: true }, null, 2));
       return true;
     }
     await send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
     await send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
+    await checkExtensions();
     await evaluate(`(()=>{const input=document.querySelector('.sv-box textarea');Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set.call(input,'UI_RENDER_TEST');input.dispatchEvent(new Event('input',{bubbles:true}));input.focus();})()`);
     await send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });
     await send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });

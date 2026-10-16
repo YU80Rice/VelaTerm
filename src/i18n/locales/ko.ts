@@ -2230,6 +2230,7 @@ const ko: typeof en = {
   "chat.autoContinue.failed": "작업을 자동으로 계속하지 못했습니다. 메시지를 보내면 계속할 수 있습니다.", // The task could not continue automatically. Send a message to continue.
   "chat.mcp.codexScope": "Codex 사용자 설정이 변경되며, 이 설정을 사용하는 다른 대화에도 영향을 줍니다. 계속하시겠습니까?",
   "chat.mcp.tooltip": "MCP 서버",
+  "chat.mcp.zcodeProbe": "별도 CLI 프로세스에서 설정된 서버를 검사합니다. 다시 연결하면 모든 서버를 검사합니다. 활성화 또는 비활성화는 Zcode 설정에서 변경하세요.",
   "chat.mcp.loading": "서버 목록을 읽는 중…",
   "chat.mcp.backendUnsupported": "현재 연결된 VelaTerm 백엔드는 MCP 관리를 지원하지 않습니다. 해당 백엔드를 업데이트하고 다시 시작한 후 재시도하세요.",
   "chat.mcp.none": "구성된 MCP 서버가 없습니다",

@@ -104,6 +104,42 @@ pub fn session_start_plan(app: &crate::host::AppCtx, session_id: &str, bin: &str
     query_command(cmd, bin, cwd, "provider/readStartPlan", json!({}))
 }
 
+/// 空白会话也从 CLI 的原生发现器读取技能；不扫描或复制另一套配置。
+pub fn session_commands(app: &crate::host::AppCtx, session_id: &str, bin: &str, cwd: Option<&str>) -> Result<Vec<Value>,String> {
+    let cwd = cwd.map(str::to_owned).unwrap_or_else(||std::env::current_dir().unwrap_or_default().to_string_lossy().into_owned());
+    let mut cmd = crate::host::command(bin);
+    cmd.current_dir(&cwd);
+    crate::agent::chat::engine::agent_environment(app, session_id, &mut cmd);
+    prepare_environment(&mut cmd, crate::host::home_dir());
+    let result = query_command(cmd, bin, Some(&cwd), "skills/referenceCatalog", json!({"workspace":{"workspacePath":cwd,"workspaceKey":cwd}}))?;
+    skill_commands(&result)
+}
+
+pub fn skill_commands(result: &Value) -> Result<Vec<Value>,String> {
+    let skills = result["skills"].as_array().ok_or("Zcode 未返回有效的技能目录")?;
+    let mut names = std::collections::HashSet::new();
+    Ok(skills.iter().filter(|skill|skill["enabled"]==true).filter_map(|skill| {
+        let name=skill["name"].as_str().filter(|name|!name.is_empty())?;
+        if !names.insert(name) { return None; }
+        Some(json!({"name":name,"description":skill["description"].as_str().unwrap_or_default(),"invocation":"/"}))
+    }).collect())
+}
+
+/// MCP 探测独占短时进程，慢握手不能堵住 resident 会话的串行请求队列。
+pub fn session_mcp(app: &crate::host::AppCtx, session_id: &str, bin: &str, cwd: Option<&str>) -> Result<Value,String> {
+    let cwd=cwd.map(str::to_owned).unwrap_or_else(||std::env::current_dir().unwrap_or_default().to_string_lossy().into_owned());
+    let mut cmd=crate::host::command(bin);
+    cmd.current_dir(&cwd);
+    crate::agent::chat::engine::agent_environment(app,session_id,&mut cmd);
+    prepare_environment(&mut cmd,crate::host::home_dir());
+    let result=query_command(cmd,bin,Some(&cwd),"mcp/list",json!({"workspace":{"workspacePath":cwd,"workspaceKey":cwd},"mode":"connect"}))?;
+    let statuses=result["statuses"].as_object().ok_or("Zcode 未返回有效的 MCP 状态")?;
+    Ok(json!({"mcpServers":statuses.iter().map(|(name,status)|json!({
+        "name":name,"status":if status["status"]=="connecting" {json!("pending")}else{status["status"].clone()},
+        "canToggle":false,"toolCount":status["toolCount"],"error":status["error"].as_str(),
+    })).collect::<Vec<_>>()}))
+}
+
 /// 冷查询和运行中会话使用同一投影，保持来源名称、思考级别及字符串说明契约。
 pub fn model_entries(snapshot: &Value) -> Vec<Value> {
     snapshot["settings"]["model"]["available"].as_array().into_iter().flatten()

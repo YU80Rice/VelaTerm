@@ -2197,6 +2197,7 @@ const zhCN: typeof en = {
   "chat.autoContinue.failed": "任务未能自动继续，发送消息即可继续。",
   "chat.mcp.codexScope": "此操作将修改 Codex 用户配置，影响使用该配置的其他会话。是否继续？",
   "chat.mcp.tooltip": "MCP 服务器",
+  "chat.mcp.zcodeProbe": "通过独立 CLI 探测已配置的服务。重连会重新探测全部服务；启停请在 Zcode 设置中操作。",
   "chat.mcp.loading": "正在读取服务器列表…",
   "chat.mcp.backendUnsupported": "当前连接的 VelaTerm 后端不支持 MCP 管理。请更新并重启该后端，然后重试。",
   "chat.mcp.none": "未配置 MCP 服务器",

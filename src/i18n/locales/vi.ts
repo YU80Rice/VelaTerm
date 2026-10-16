@@ -2208,6 +2208,7 @@ const vi: typeof en = {
   "chat.autoContinue.failed": "Không thể tự động tiếp tục tác vụ. Hãy gửi tin nhắn để tiếp tục.",
   "chat.mcp.codexScope": "Thao tác này thay đổi cấu hình người dùng Codex và ảnh hưởng đến các cuộc trò chuyện khác sử dụng cấu hình đó. Bạn có muốn tiếp tục không?",
   "chat.mcp.tooltip": "Máy chủ MCP",
+  "chat.mcp.zcodeProbe": "Kiểm tra các máy chủ đã cấu hình bằng tiến trình CLI riêng. Kết nối lại sẽ kiểm tra tất cả; bật hoặc tắt máy chủ trong cài đặt Zcode.",
   "chat.mcp.loading": "Đang đọc danh sách máy chủ…",
   "chat.mcp.backendUnsupported": "Máy chủ VelaTerm đang kết nối không hỗ trợ quản lý MCP. Hãy cập nhật và khởi động lại máy chủ đó, rồi thử lại.",
   "chat.mcp.none": "Chưa cấu hình máy chủ MCP nào",

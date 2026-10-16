@@ -2253,6 +2253,7 @@ const de: typeof en = {
   "chat.autoContinue.failed": "Die Aufgabe konnte nicht automatisch fortgesetzt werden. Senden Sie eine Nachricht, um fortzufahren.", // The task could not continue automatically. Send a message to continue.
   "chat.mcp.codexScope": "Dadurch wird Ihre Codex-Benutzerkonfiguration geändert. Dies betrifft auch andere Unterhaltungen, die diese Konfiguration verwenden. Fortfahren?",
   "chat.mcp.tooltip": "MCP-Server",
+  "chat.mcp.zcodeProbe": "Prüft konfigurierte Server in einem separaten CLI-Prozess. Neu verbinden prüft alle Server; aktivieren oder deaktivieren Sie sie in den Zcode-Einstellungen.",
   "chat.mcp.loading": "Serverliste wird gelesen …",
   "chat.mcp.backendUnsupported": "Das verbundene VelaTerm-Backend unterstützt die MCP-Verwaltung nicht. Aktualisieren Sie dieses Backend, starten Sie es neu und versuchen Sie es erneut.",
   "chat.mcp.none": "Keine MCP-Server konfiguriert",

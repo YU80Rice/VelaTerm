@@ -973,6 +973,7 @@ it("searches the focused session and closes without interrupting a running turn"
 it.each([
   ["codex", "/vsp", "$vspawn "], ["codex", "$vsp", "$vspawn "],
   ["claude", "/vsp", "/vspawn "], ["claude", "$vsp", "/vspawn "],
+  ["zcode", "/vsp", "/vspawn "], ["zcode", "$vsp", "/vspawn "],
 ] as const)("loads skills before the first message: %s %s", async (kind, draft, native) => {
   snapshotOverrides = { running: false, commands: [] };
   const fallback = vi.mocked(invoke).getMockImplementation()!;
@@ -990,6 +991,19 @@ it.each([
   fireEvent.change(input, { target: { value: native + "inspect the project" } });
   fireEvent.keyDown(input, { key: "Enter" });
   await waitFor(() => expect(invoke).toHaveBeenCalledWith("chat_send", expect.objectContaining({ text: native + "inspect the project" })));
+});
+
+it("exposes native Zcode MCP management in the composer", async () => {
+  const fallback = vi.mocked(invoke).getMockImplementation()!;
+  vi.mocked(invoke).mockImplementation((command, args) => command === "chat_mcp_status"
+    ? Promise.resolve({ mcpServers: [{ name: "plugin:fixture:tools", status: "connected", canToggle: false, toolCount: 2 }] }) as Promise<never>
+    : fallback(command, args));
+  await mountPane("zcode");
+  fireEvent.click(screen.getByRole("button", { name: "MCP" }));
+  await screen.findByText("plugin:fixture:tools");
+  expect(invoke).toHaveBeenCalledWith("chat_mcp_status", { sessionId: "s" });
+  expect(screen.getByText(/2 tools/)).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Disable" }).hasAttribute("disabled")).toBe(true);
 });
 
 

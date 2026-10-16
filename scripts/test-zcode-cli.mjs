@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import net from 'node:net';
 import { spawn } from 'node:child_process';
-import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -21,6 +21,36 @@ const workspace = path.join(root, 'workspace');
 const nativeRoot = path.join(root, 'native');
 const profile = path.join(root, 'profile');
 await Promise.all([mkdir(workspace), mkdir(profile), mkdir(path.join(nativeRoot, '.zcode/v2'), { recursive: true })]);
+// 真实发现器：用户、工作区和插件技能，以及本地与插件 MCP。
+const pluginRoot = path.join(root, 'extension-plugin');
+for (const [dir, name] of [
+  [path.join(profile, '.agents/skills/user-probe'), 'user-probe'],
+  [path.join(workspace, '.agents/skills/workspace-probe'), 'workspace-probe'],
+  [path.join(pluginRoot, 'skills/plugin-probe'), 'plugin-probe'],
+]) {
+  await mkdir(dir, { recursive: true });
+  await writeFile(path.join(dir, 'SKILL.md'), `---\nname: ${name}\ndescription: Read-only extension regression probe\n---\nEXTENSION_SKILL_CONTENT_OK\n`);
+}
+await mkdir(path.join(pluginRoot, '.zcode-plugin'), { recursive: true });
+await writeFile(path.join(pluginRoot, '.zcode-plugin/plugin.json'), JSON.stringify({ name: 'extension-fixture', version: '1.0.0' }));
+const mcpScript = path.join(root, 'fixture-mcp.cjs');
+const slowMcpFlag = path.join(root, 'slow-mcp.flag');
+const slowMcpStarted = path.join(root, 'slow-mcp.started');
+await writeFile(mcpScript, `const readline=require('readline'),fs=require('fs');
+readline.createInterface({input:process.stdin}).on('line',line=>{const q=JSON.parse(line);if(q.id===undefined)return;
+const result=q.method==='initialize'?{protocolVersion:'2024-11-05',capabilities:{tools:{}},serverInfo:{name:'extension-fixture',version:'1'}}:
+q.method==='tools/list'?{tools:[{name:'echo',description:'Read-only regression probe',inputSchema:{type:'object',properties:{},additionalProperties:false}}]}:
+q.method==='tools/call'?{content:[{type:'text',text:process.argv[2]==='plugin'?'EXTENSION_PLUGIN_MCP_CONTENT_OK':'EXTENSION_MCP_CONTENT_OK'}]}:{};
+const send=()=>process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:q.id,result})+'\\n');
+if(fs.existsSync(${JSON.stringify(slowMcpFlag)})&&q.method!=='tools/call'){fs.writeFileSync(${JSON.stringify(slowMcpStarted)},'started');setTimeout(send,8000)}else send();});`);
+const mcpConfig = { type: 'stdio', command: process.execPath, args: [mcpScript] };
+await writeFile(path.join(pluginRoot, '.mcp.json'), JSON.stringify({ mcpServers: { tools: { ...mcpConfig, args: [mcpScript, 'plugin'] } } }));
+await mkdir(path.join(workspace, '.zcode'), { recursive: true });
+await writeFile(path.join(workspace, '.zcode/config.json'), JSON.stringify({ plugins: { dirs: [pluginRoot] }, mcp: { servers: {
+  'extension-local': mcpConfig,
+  'extension-disabled': { ...mcpConfig, enabled: false },
+  'extension-broken': { type: 'stdio', command: path.join(root, 'missing-mcp.exe'), args: [] },
+} } }));
 // Windows 会话会重建系统环境。仅在测试 wrapper 中指定 profile，避免加载个人 hooks。
 const wrapper = path.join(root, 'fixture-zcode.cmd');
 const environmentLog = path.join(root, 'launch-profiles.txt');
@@ -77,7 +107,9 @@ const modelServer = createServer(async (request, response) => {
   let raw = '';
   for await (const chunk of request) raw += chunk;
   const body = JSON.parse(raw);
-  const text = body.messages.filter(message => message.role === 'user').map(message => JSON.stringify(message.content)).join('\n');
+  // 原生 CLI 会插入合成 user 消息；按最后一个测试指令选分支，避免历史工具请求污染新回合。
+  const text = body.messages.filter(message => message.role === 'user').map(message => JSON.stringify(message.content))
+    .findLast(text => /UI_RENDER_TEST|ALPHA|BETA|WRITE|DENIAL|PLAN_REVIEW|EXTENSION_(?:PLUGIN_MCP|MCP|SKILL)|STALL/.test(text)) ?? '';
   response.writeHead(200, { 'Content-Type': 'text/event-stream' });
   if (text.includes('STALL')) { response.write(': waiting\n\n'); return; }
   const base = { id: 'chatcmpl-fixture', object: 'chat.completion.chunk', created: 1, model: 'gpt-4o' };
@@ -87,12 +119,21 @@ const modelServer = createServer(async (request, response) => {
     if (text.includes('WRITE')) tool = { name: 'Write', arguments: { file_path: path.join(workspace, 'written.txt'), content: 'WRITE_OK' } };
     if (text.includes('DENIAL')) tool = { name: 'Bash', arguments: { command: 'printf DENIED > blocked.txt', description: '权限拒绝测试' } };
     if (text.includes('PLAN_REVIEW')) tool = { name: 'ExitPlanMode', arguments: { plan: '实现经过批准的计划。' } };
+    if (text.includes('EXTENSION_SKILL')) tool = { name: 'Skill', arguments: { skill: 'plugin-probe' } };
+    if (text.includes('EXTENSION_MCP') || text.includes('EXTENSION_PLUGIN_MCP')) {
+      const pattern = text.includes('EXTENSION_PLUGIN_MCP') ? /extension.fixture.*echo/i : /extension.local.*echo/i;
+      const native = body.tools.find(tool => pattern.test(tool.function.name));
+      assert(native, '模型上下文必须收到真实 MCP 工具');
+      tool = { name: native.function.name, arguments: {} };
+    }
     if (tool) {
       chunk({ role: 'assistant', tool_calls: [{ index: 0, id: 'call-fixture', type: 'function', function: { name: tool.name, arguments: JSON.stringify(tool.arguments) } }] });
       chunk({}, 'tool_calls'); response.end('data: [DONE]\n\n'); return;
     }
   }
-  const textResult = text.includes('UI_RENDER_TEST') ? 'UI_RENDER_OK' : text.includes('ALPHA') ? 'ALPHA_RESULT' : text.includes('BETA') ? 'BETA_RESULT' : 'FIXTURE_RESULT';
+  const extension = text.includes('EXTENSION_SKILL') ? 'EXTENSION_SKILL_CONTENT_OK' : text.includes('EXTENSION_PLUGIN_MCP') ? 'EXTENSION_PLUGIN_MCP_CONTENT_OK' : text.includes('EXTENSION_MCP') ? 'EXTENSION_MCP_CONTENT_OK' : null;
+  if (extension) assert(body.messages.some(message => message.role === 'tool' && JSON.stringify(message.content).includes(extension)), '必须收到实际技能/MCP 执行结果');
+  const textResult = extension ?? (text.includes('UI_RENDER_TEST') ? 'UI_RENDER_OK' : text.includes('ALPHA') ? 'ALPHA_RESULT' : text.includes('BETA') ? 'BETA_RESULT' : 'FIXTURE_RESULT');
   chunk({ role: 'assistant', content: textResult.slice(0, 5) });
   chunk({ content: textResult.slice(5) });
   chunk({}, 'stop'); response.end('data: [DONE]\n\n');
@@ -160,6 +201,8 @@ try {
   };
   // 空白会话尚无 CLI 进程：必须先能选择模型，不能先发送消息才能解锁菜单。
   const cold = await create(false);
+  const coldCommands = await call('chat_commands', { sessionId: cold });
+  for (const name of ['user-probe', 'workspace-probe', 'plugin-probe']) assert(coldCommands.some(command => command.name === name && command.invocation === '/'), '空白会话缺少技能：' + name);
   const noLoginPlan = await call('chat_zcode_start_plan', { sessionId: cold });
   assert(noLoginPlan.plans.length > 0 && noLoginPlan.plans.every(plan => plan.status === 'not-authenticated'), '未登录时需给出明确的 Start Plan 状态');
   const coldModels = await call('chat_models', { sessionId: cold });
@@ -202,6 +245,49 @@ try {
   await until(() => call('chat_snapshot', { sessionId: alpha }), snapshot => snapshot.rows.filter(row => row.kind === 'assistant' && !row.streaming).length >= 2, '恢复后继续对话');
   assert.equal((await call('list_tree')).sessions.find(session => session.id === alpha).agentSessionId, before);
   const writer = await create();
+  const extensionSession = await create();
+  const liveCommands = await call('chat_commands', { sessionId: extensionSession });
+  assert(liveCommands.some(command => command.name === 'plugin-probe'));
+  const mcpBefore = await call('chat_mcp_status', { sessionId: extensionSession });
+  assert(mcpBefore.mcpServers.some(server => server.name === 'extension-local'));
+  const mcpConnected = await call('chat_mcp_reconnect', { sessionId: extensionSession, server: 'extension-local' });
+  for (const name of ['extension-local', 'plugin:extension-fixture:tools']) {
+    const server = mcpConnected.mcpServers.find(server => server.name === name);
+    assert.equal(server?.status, 'connected'); assert.equal(server.toolCount, 1); assert.equal(server.canToggle, false);
+  }
+  assert.equal(mcpConnected.mcpServers.find(server => server.name === 'extension-disabled')?.status, 'disabled');
+  assert(mcpConnected.mcpServers.find(server => server.name === 'extension-broken')?.error, '连接失败必须保留原生错误');
+  await call('chat_send', { sessionId: extensionSession, text: '/plugin-probe EXTENSION_SKILL' });
+  assert((await finished(extensionSession)).rows.some(row => row.kind === 'tool' && row.name === 'Skill' && row.status === 'completed' && !row.isError));
+  const mcpSession = await create();
+  await call('chat_set_mode', { sessionId: mcpSession, mode: 'yolo' });
+  await call('chat_send', { sessionId: mcpSession, text: 'EXTENSION_MCP' });
+  const mcpGate = await until(() => call('chat_snapshot', { sessionId: mcpSession }), snapshot => snapshot.permissions.length || snapshot.rows.some(row => row.kind === 'assistant' && row.text === 'EXTENSION_MCP_CONTENT_OK'), 'MCP 工具执行或权限确认');
+  if (mcpGate.permissions.length) {
+    assert(mcpGate.permissions.every(permission => /echo/.test(permission.tool_name)), '只允许测试自己的 MCP 工具');
+    for (const permission of mcpGate.permissions) await call('chat_permission', { sessionId: mcpSession, requestId: permission.id, allow: true });
+  }
+  assert((await finished(mcpSession)).rows.some(row => row.kind === 'assistant' && row.text === 'EXTENSION_MCP_CONTENT_OK'));
+  const pluginMcpSession = await create();
+  await call('chat_send', { sessionId: pluginMcpSession, text: 'EXTENSION_PLUGIN_MCP' });
+  const pluginGate = await until(() => call('chat_snapshot', { sessionId: pluginMcpSession }), snapshot => snapshot.permissions.length || snapshot.rows.some(row => row.kind === 'assistant' && row.text === 'EXTENSION_PLUGIN_MCP_CONTENT_OK'), '插件 MCP 工具执行或权限确认');
+  for (const permission of pluginGate.permissions) {
+    assert(/extension.fixture.*echo/.test(permission.tool_name), '只允许测试插件自己的 MCP 工具');
+    await call('chat_permission', { sessionId: pluginMcpSession, requestId: permission.id, allow: true });
+  }
+  const pluginResult = await finished(pluginMcpSession);
+  assert(pluginResult.rows.some(row => row.kind === 'tool' && /extension.fixture.*echo/.test(row.name) && row.status === 'completed' && row.output?.includes('EXTENSION_PLUGIN_MCP_CONTENT_OK')));
+  // 设置页探测不能占用 resident CLI 的串行传输，阻塞已经就绪的聊天。
+  await writeFile(slowMcpFlag, 'slow');
+  const slowProbe = call('chat_mcp_reconnect', { sessionId: mcpSession, server: 'extension-local' }).then(value => ({ value }), error => ({ error }));
+  await until(async () => { try { await readFile(slowMcpStarted); return true; } catch { return false; } }, Boolean, '慢 MCP 已开始探测');
+  const beforeConcurrentChat = Date.now();
+  await call('chat_send', { sessionId: mcpSession, text: 'ALPHA_CONCURRENT' });
+  await until(() => call('chat_snapshot', { sessionId: mcpSession }), snapshot => snapshot.rows.some(row => row.kind === 'assistant' && row.text === 'ALPHA_RESULT'), 'MCP 探测期间仍能聊天', 5000);
+  assert(Date.now() - beforeConcurrentChat < 5000, 'MCP 探测堵塞聊天');
+  await rm(slowMcpFlag);
+  const probed = await slowProbe;
+  assert(!probed.error, '慢 MCP 探测应能收尾');
   await call('chat_set_mode', { sessionId: writer, mode: 'yolo' });
   await call('chat_send', { sessionId: writer, text: 'WRITE' });
   const written = await finished(writer);
@@ -275,7 +361,7 @@ try {
   await call('chat_send', { sessionId: startPlan, text: 'EXHAUSTED_START_PLAN' }).catch(() => {});
   await delay(1500);
   assert.equal(startPlanRequests, 1); assert.equal(generationRequests, generationBeforeExhaustedSend, '额度耗尽不能自动回退到第三方模型');
-  const result = { appVersion: expectedVersion, coldModelCatalogue: true, coldModelSelection: true, stoppedModelCatalogue: true, coldBrowserUI, nativeConcurrentSessions: true, nativeResume: true, offlineHistory: true, permissionDenial: true, permissionReannouncement: true, pendingInteractionCancellation: true, writeToolAndArguments: true, planApproval: true, interrupt: true, browserUI, startPlanBrowserUI, startPlanPending: true, startPlanJwtRequest: true, startPlanQuotaUpdated: true, startPlanNoFallback: true, zcodeGuiUsed: false, productionAccountAuthorization: false };
+  const result = { nativeSkillCatalogue: true, nativeSkillTool: true, nativeMcpTool: true, nativePluginMcpTool: true, nativeMcpFailureAndDisabled: true, slowMcpDoesNotBlockChat: true, appVersion: expectedVersion, coldModelCatalogue: true, coldModelSelection: true, stoppedModelCatalogue: true, coldBrowserUI, nativeConcurrentSessions: true, nativeResume: true, offlineHistory: true, permissionDenial: true, permissionReannouncement: true, pendingInteractionCancellation: true, writeToolAndArguments: true, planApproval: true, interrupt: true, browserUI, startPlanBrowserUI, startPlanPending: true, startPlanJwtRequest: true, startPlanQuotaUpdated: true, startPlanNoFallback: true, zcodeGuiUsed: false, productionAccountAuthorization: false };
   await writeFile(path.join(root, 'result.json'), JSON.stringify(result, null, 2));
   console.log(JSON.stringify({ ...result, evidence: path.join(root, 'result.json') }));
 } finally {

@@ -227,7 +227,7 @@ export function ChipPopover({
  * `disabled` is for the time no agent process is alive: the chip stays in the row but opens nothing and
  * asks the backend nothing, because the status request needs a running agent to answer it.
  */
-export function McpChip({ sessionId, codex = false, disabled = false }: { sessionId: string; codex?: boolean; disabled?: boolean }) {
+export function McpChip({ sessionId, codex = false, zcode = false, disabled = false }: { sessionId: string; codex?: boolean; zcode?: boolean; disabled?: boolean }) {
   const t = useT();
   const [servers, setServers] = useState<ChatMcpServer[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -252,6 +252,7 @@ export function McpChip({ sessionId, codex = false, disabled = false }: { sessio
       disabled={disabled}
       onOpen={() => apply(chatMcpStatus(sessionId))}
     >
+      {zcode && <div className="sv-popover-sub">{t("chat.mcp.zcodeProbe")}</div>}
       {error ? (
         <>
           <div className="sv-popover-error" role="alert">
@@ -277,8 +278,9 @@ export function McpChip({ sessionId, codex = false, disabled = false }: { sessio
                 <span className="sv-popover-title">{server.name}</span>
                 <span className="sv-popover-sub">
                   {t(`chat.mcp.status.${statusKey(server.status)}` as "chat.mcp.status.connected")}
-                  {server.tools?.length ? ` · ${t("chat.mcp.tools", server.tools.length)}` : ""}
+                  {(server.toolCount ?? server.tools?.length) ? ` · ${t("chat.mcp.tools", server.toolCount ?? server.tools!.length)}` : ""}
                 </span>
+                {server.error && <span className="sv-popover-error">{server.error}</span>}
               </span>
               {down && enabled ? (
                 <button

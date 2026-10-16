@@ -2256,6 +2256,7 @@ const en = {
   // ── MCP servers and background tasks ──
   "chat.mcp.codexScope": "This changes your Codex user configuration and affects other conversations using it. Continue?",
   "chat.mcp.tooltip": "MCP servers",
+  "chat.mcp.zcodeProbe": "Tests configured servers in a separate CLI process. Reconnect tests all servers; enable or disable them in Zcode settings.",
   "chat.mcp.loading": "Reading the server list…",
   "chat.mcp.backendUnsupported": "The connected VelaTerm backend does not support MCP controls. Update and restart that backend, then retry.",
   "chat.mcp.none": "No MCP servers configured",

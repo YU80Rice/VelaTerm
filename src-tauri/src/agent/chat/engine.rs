@@ -2496,6 +2496,7 @@ impl ChatManager {
     pub fn mcp_toggle(&self, session_id: &str, server: &str, enabled: bool) -> Result<Value, String> {
         let proc = self.get(session_id)?;
         if proc.kind == SessionKind::Codex { return codex::mcp_toggle(&proc, server, enabled); }
+        if proc.kind == SessionKind::Zcode { return Err("请在 Zcode 设置中启停 MCP；原生 CLI 当前只提供状态查询和重新连接".into()); }
         let proc = self.claude(session_id)?;
         proc.request_and_wait("mcp_toggle", |id| {
             protocol::control_request(id, protocol::mcp_toggle(server, enabled))
@@ -2535,6 +2536,12 @@ impl ChatManager {
         if !proc.alive.load(Ordering::Relaxed) { return None; }
         let commands = proc.commands.lock().unwrap().clone();
         Some(commands)
+    }
+
+    pub fn live_zcode_commands(&self, session_id: &str) -> Option<Result<Vec<Value>,String>> {
+        let proc=self.get(session_id).ok()?;
+        if proc.kind!=SessionKind::Zcode || !proc.alive.load(Ordering::Relaxed) { return None; }
+        Some(zcode::refresh_commands(&proc))
     }
 
     /// The catalogue the running Claude process reported, or None before it has answered.
@@ -7581,6 +7588,45 @@ mod tests {
         proc.alive.store(false, Ordering::Relaxed);
         assert!(manager.live_codex_models("s").is_none());
         proc.child.lock().unwrap().wait().unwrap();
+    }
+
+    #[test]
+    fn zcode_skill_catalogue_retains_native_session_authority() {
+        let app=ctx("zcode-extensions");
+        let (mut proc,stdout)=cat_process();
+        Arc::get_mut(&mut proc).unwrap().kind=SessionKind::Zcode;
+        *proc.agent_session_id.lock().unwrap()=Some("sess-native".into());
+        proc.zcode.lock().unwrap().slash_commands=vec![json!({"name":"compact","invocation":"/"})];
+        let manager=ChatManager::new();
+        manager.sessions.lock().unwrap().insert("s".into(),proc.clone());
+        let responder=proc.clone();
+        let worker=std::thread::spawn(move || {
+            let mut methods=Vec::new();
+            for line in BufReader::new(stdout).lines() {
+                let request:Value=serde_json::from_str(&line.unwrap()).unwrap();
+                let method=request["method"].as_str().unwrap();
+                methods.push(method.to_owned());
+                let result=match method {
+                    "skills/referenceCatalog"=>{
+                        assert_eq!(request["params"]["sessionId"],"sess-native");
+                        json!({"authority":"session","skills":[{"name":"plugin-skill","description":"Plugin skill","enabled":true}]})
+                    },
+                    other=>panic!("错误的原生方法：{other}"),
+                };
+                zcode::handle_line(&app,"s",&responder,&json!({"id":request["id"],"result":result}).to_string());
+            }
+            methods
+        });
+        for _ in 0..2 {
+            let commands=manager.live_zcode_commands("s").unwrap().unwrap();
+            assert_eq!(commands.len(),2,"刷新不能重复堆叠技能或丢失原生命令");
+            assert_eq!(commands[1]["name"],"plugin-skill");
+            assert_eq!(commands[1]["invocation"],"/");
+        }
+        assert!(manager.mcp_toggle("s","plugin:fixture:tools",false).unwrap_err().contains("Zcode"));
+        proc.child.lock().unwrap().kill().unwrap();
+        proc.child.lock().unwrap().wait().unwrap();
+        assert_eq!(worker.join().unwrap(),["skills/referenceCatalog","skills/referenceCatalog"]);
     }
 
     #[test]

@@ -1165,7 +1165,21 @@ pub fn chat_review(ctx: &AppCtx, session_id: &str, args: &str) -> Result<(), Str
 
 /// The MCP servers the running agent knows, with their state and tools.
 pub fn chat_mcp_status(ctx: &AppCtx, session_id: &str) -> Result<serde_json::Value, String> {
+    if let Some(result)=zcode_mcp_probe(ctx,session_id,None)? { return Ok(result); }
     ctx.chat().mcp_status(session_id)
+}
+
+fn zcode_mcp_probe(ctx: &AppCtx, session_id: &str, server: Option<&str>) -> Result<Option<serde_json::Value>,String> {
+    let session=session_settings::session(ctx,session_id)?;
+    if session.kind!=SessionKind::Zcode { return Ok(None); }
+    let bin=crate::agent::executable::for_session(ctx,&session);
+    let root=repo::get_project_root(&ctx.db().conn.lock().unwrap(),&session.project_id)?;
+    let cwd=session.cwd.as_deref().filter(|cwd|!cwd.trim().is_empty()).or(root.as_deref());
+    let result=crate::agent::zcode_cli::session_mcp(ctx,session_id,&bin,cwd)?;
+    if server.is_some_and(|name|!result["mcpServers"].as_array().is_some_and(|servers|servers.iter().any(|item|item["name"]==name))) {
+        return Err("Zcode 配置中没有此 MCP".into());
+    }
+    Ok(Some(result))
 }
 
 /// Enable or disable one MCP server, answering with the refreshed server list.
@@ -1184,6 +1198,7 @@ pub fn chat_mcp_reconnect(
     session_id: &str,
     server: &str,
 ) -> Result<serde_json::Value, String> {
+    if let Some(result)=zcode_mcp_probe(ctx,session_id,Some(server))? { return Ok(result); }
     ctx.chat().mcp_reconnect(session_id, server)
 }
 
@@ -1691,6 +1706,7 @@ pub fn chat_models(ctx: &AppCtx, session_id: &str) -> Result<serde_json::Value, 
 
 /// Read the provider catalogue even before the first message, without starting a conversation.
 pub fn chat_commands(ctx: &AppCtx, session_id: &str) -> Result<Vec<serde_json::Value>, String> {
+    if let Some(commands)=ctx.chat().live_zcode_commands(session_id) { return commands; }
     if let Some(commands) = ctx
         .chat()
         .live_commands(session_id)
@@ -1699,7 +1715,7 @@ pub fn chat_commands(ctx: &AppCtx, session_id: &str) -> Result<Vec<serde_json::V
         return Ok(commands);
     }
     let session = session_settings::session(ctx, session_id)?;
-    if !matches!(session.kind, SessionKind::Codex | SessionKind::Claude) {
+    if !matches!(session.kind, SessionKind::Codex | SessionKind::Claude | SessionKind::Zcode) {
         return Ok(Vec::new());
     }
     let root = {
@@ -1712,6 +1728,7 @@ pub fn chat_commands(ctx: &AppCtx, session_id: &str) -> Result<Vec<serde_json::V
         .filter(|c| !c.trim().is_empty())
         .or(root.as_deref());
     let bin = crate::agent::executable::for_session(ctx, &session);
+    if session.kind==SessionKind::Zcode { return crate::agent::zcode_cli::session_commands(ctx,session_id,&bin,cwd); }
     let args =
         session_settings::without_selection_args(session.kind, session.agent_args.as_deref());
     crate::agent::chat::skills::lookup(

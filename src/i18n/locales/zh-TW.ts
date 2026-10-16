@@ -2198,6 +2198,7 @@ const zhTW: typeof en = {
   "chat.autoContinue.failed": "任務未能自動繼續，傳送訊息即可繼續。", // The task could not continue automatically. Send a message to continue.
   "chat.mcp.codexScope": "此操作將修改 Codex 使用者設定，影響使用該設定的其他工作階段。是否繼續？",
   "chat.mcp.tooltip": "MCP 伺服器",
+  "chat.mcp.zcodeProbe": "透過獨立 CLI 探測已設定的服務。重新連線會重新探測全部服務；啟停請在 Zcode 設定中操作。",
   "chat.mcp.loading": "正在讀取伺服器清單…",
   "chat.mcp.backendUnsupported": "目前連線的 VelaTerm 後端不支援 MCP 管理。請更新並重新啟動該後端，然後重試。",
   "chat.mcp.none": "尚未設定 MCP 伺服器",

@@ -327,6 +327,7 @@ export function isTaskFinished(task: Pick<ChatBackgroundTask, "finished" | "ende
 
 /** An MCP server as the running agent reports it. */
 export interface ChatMcpServer {
+  toolCount?: number;
   canToggle?: boolean;
   name: string;
   status: string;

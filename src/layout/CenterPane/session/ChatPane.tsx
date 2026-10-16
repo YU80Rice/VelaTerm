@@ -1742,7 +1742,7 @@ export function ChatPane({
 
   const wantsCatalogue = /^[/\$][^\s]*$/.test(draft) || /(?:^|\s)\$[^\s$]*$/.test(draft.slice(0, caret));
   useEffect(() => {
-    if (!wantsCatalogue || hidden || !["codex", "claude"].includes(session.kind)) return;
+    if (!wantsCatalogue || hidden || !["codex", "claude", "zcode"].includes(session.kind)) return;
     let disposed = false;
     setCatalogueLoading(true);
     void chatCommands(session.id).then((catalogue) => {
@@ -2091,8 +2091,8 @@ export function ChatPane({
   // A chip the user turned on is offered whenever it exists for this agent kind. Between turns the agent
   // process is away, so MCP and Tasks are disabled rather than dropped: a chip that comes and goes with
   // the process cannot be found by someone who just switched it on.
-  if (session.kind === "claude" || session.kind === "codex") composerChips.push({ id: "mcp", node: (
-    <McpChip sessionId={session.id} codex={session.kind === "codex"} disabled={!engineRunning} />
+  if (session.kind === "claude" || session.kind === "codex" || session.kind === "zcode") composerChips.push({ id: "mcp", node: (
+    <McpChip sessionId={session.id} codex={session.kind === "codex"} zcode={session.kind === "zcode"} disabled={!engineRunning} />
   ) });
   if (session.kind === "claude") composerChips.push({ id: "chrome", node: (
     <ControlChip

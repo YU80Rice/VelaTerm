@@ -15,6 +15,8 @@ pub(super) struct State {
     completed_turns: HashSet<String>,
     pub models: Vec<Value>,
     model_choices: HashMap<String,Value>,
+    skill_commands: Vec<Value>,
+    pub(super) slash_commands: Vec<Value>,
     pub auth_child: Option<Arc<std::sync::Mutex<std::process::Child>>>,
 }
 
@@ -68,6 +70,8 @@ pub(super) fn bootstrap(app: AppCtx, session_id: String, proc: Arc<ChatProcess>,
             *proc.agent_session_id.lock().unwrap() = Some(native.into());
             let changed = crate::db::repo::set_agent_session_id(&app.db().conn.lock().unwrap(), &session_id, native, SessionKind::Zcode)?;
             if changed { app.emit(crate::host::TREE_CHANGED, ()); }
+            // 与运行中的设置修改串行，启动时捕获的默认值不能覆盖刚确认的新选择。
+            let settings_change = proc.settings_change.lock().unwrap();
             let selected_model = proc.model.lock().unwrap().clone();
             let selected_effort = proc.effort.lock().unwrap().clone();
             let selected_mode = proc.mode.lock().unwrap().clone();
@@ -83,7 +87,13 @@ pub(super) fn bootstrap(app: AppCtx, session_id: String, proc: Arc<ChatProcess>,
             proc.permission_confirmed.store(true, Ordering::Relaxed);
             emit(&app, &session_id, json!({"type":"session","agentSessionId":native,"model":proc.model.lock().unwrap().clone()}));
             proc.ready.store(true, Ordering::Relaxed);
+            drop(settings_change);
             start_waiting_message(&app, &session_id, &proc);
+            // 先完成预选设置并放行会话，再读取会初始化 context 的技能目录。
+            // 慢发现不能让启动时捕获的旧模式覆盖用户刚确认的设置。
+            if let Ok(commands) = refresh_commands(&proc) {
+                emit(&app,&session_id,json!({"type":"commands","commands":commands}));
+            }
             Ok(())
         };
         if let Err(error) = run() {
@@ -102,7 +112,11 @@ fn apply_snapshot(app: &AppCtx, session: &str, proc: &Arc<ChatProcess>, snapshot
     apply_models(proc, snapshot);
     if let Some(mode) = settings["mode"]["current"].as_str() { *proc.mode.lock().unwrap() = mode.into(); }
     *proc.effort.lock().unwrap() = settings["thoughtLevel"]["current"].as_str().map(str::to_string);
-    let commands = snapshot["slashCommands"].as_array().into_iter().flatten().map(|v|json!({"name":v["name"],"description":v["description"],"invocation":"/"})).collect::<Vec<_>>();
+    let commands = {
+        let mut state=proc.zcode.lock().unwrap();
+        state.slash_commands=snapshot["slashCommands"].as_array().into_iter().flatten().filter(|v|v["name"].as_str().is_some()).map(|v|json!({"name":v["name"],"description":v["description"].as_str().unwrap_or_default(),"invocation":"/"})).collect();
+        combined_commands(&state)
+    };
     *proc.commands.lock().unwrap() = commands.clone();
     emit(app,session,json!({"type":"commands","commands":commands}));
     if history {
@@ -116,6 +130,26 @@ fn apply_snapshot(app: &AppCtx, session: &str, proc: &Arc<ChatProcess>, snapshot
             }
         }
     }
+}
+
+fn workspace(proc: &ChatProcess) -> Value {
+    let cwd=proc.cwd.clone().unwrap_or_else(||std::env::current_dir().unwrap_or_default().to_string_lossy().into_owned());
+    json!({"workspacePath":cwd,"workspaceKey":cwd})
+}
+
+pub(super) fn refresh_commands(proc: &ChatProcess) -> Result<Vec<Value>,String> {
+    let result=command(proc,"zcode_skills","skills/referenceCatalog",json!({"workspace":workspace(proc)}))?;
+    let skills=crate::agent::zcode_cli::skill_commands(&result)?;
+    let mut state=proc.zcode.lock().unwrap();
+    state.skill_commands=skills;
+    let commands=combined_commands(&state);
+    *proc.commands.lock().unwrap()=commands.clone();
+    Ok(commands)
+}
+
+fn combined_commands(state: &State) -> Vec<Value> {
+    let mut names=HashSet::new();
+    state.slash_commands.iter().chain(&state.skill_commands).filter(|command|names.insert(command["name"].as_str().unwrap_or_default())).cloned().collect()
 }
 
 fn apply_models(proc: &Arc<ChatProcess>, snapshot: &Value) {

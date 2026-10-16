@@ -2247,6 +2247,7 @@ const ja: typeof en = {
   "chat.autoContinue.failed": "タスクを自動的に再開できませんでした。メッセージを送信すると再開できます。", // The task could not continue automatically. Send a message to continue.
   "chat.mcp.codexScope": "Codex のユーザー設定を変更します。この設定を使用する他のセッションにも影響します。続行しますか？",
   "chat.mcp.tooltip": "MCP サーバー",
+  "chat.mcp.zcodeProbe": "別の CLI プロセスで設定済みサーバーを検査します。再接続ではすべてのサーバーを検査します。有効・無効の切り替えは Zcode の設定で行ってください。",
   "chat.mcp.loading": "サーバー一覧を読み込んでいます…",
   "chat.mcp.backendUnsupported": "接続先の VelaTerm バックエンドは MCP の管理に対応していません。バックエンドを更新して再起動し、もう一度お試しください。",
   "chat.mcp.none": "MCP サーバーは設定されていません",
