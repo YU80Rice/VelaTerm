@@ -178,18 +178,17 @@ const bounded = (promise, ms, label) => {
 };
 const stopOwnedProcess = async child => {
   if (!child.pid || child.exitCode !== null || child.signalCode !== null) return;
+  const alive=()=>{try{process.kill(child.pid,0);return true;}catch(error){if(error.code==='ESRCH')return false;throw error;}};
+  if(!alive()) return;
   const killer = spawn(path.join(process.env.SystemRoot ?? 'C:/Windows', 'System32/taskkill.exe'), ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
   let report='';
   for (const stream of [killer.stdout,killer.stderr]) stream.on('data',bytes=>{report=(report+bytes.toString()).slice(-2048);});
   await bounded(new Promise((resolve, reject) => { killer.once('exit', resolve); killer.once('error', reject); }), 15000, '测试进程树停止超时');
-  // Windows 进程已消失时，ChildProcess 的 exit 通知仍可能迟到；按系统实际 PID 验证，不能把迟到通知误报为残留。
+  // 不依赖可能不可用的 WMI/tasklist；通过系统进程句柄检查实际存活状态。
+  if(alive()) child.kill('SIGKILL');
   const end=Date.now()+15000;
   do {
-    const query=spawn(path.join(process.env.SystemRoot ?? 'C:/Windows','System32/tasklist.exe'),['/FI',`PID eq ${child.pid}`,'/FO','CSV','/NH'],{windowsHide:true,stdio:['ignore','pipe','pipe']});
-    let output='';query.stdout.on('data',bytes=>{output+=bytes.toString()});query.stderr.resume();
-    const code=await bounded(new Promise((resolve,reject)=>{query.once('exit',resolve);query.once('error',reject)}),5000,'测试进程状态查询超时');
-    if(code!==0) throw Error('无法确认测试进程状态');
-    if(!output.includes(`","${child.pid}",`)) return;
+    if(!alive()) return;
     await delay(100);
   } while(Date.now()<end);
   throw Error(`测试进程未退出 ${child.pid}: ${report}`);

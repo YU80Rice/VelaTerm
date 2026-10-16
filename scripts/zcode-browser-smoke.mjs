@@ -170,11 +170,12 @@ export async function checkZcodeBrowser({ base, token, sessionName, root, cold =
     await writeFile(path.join(root, 'browser-result.json'), JSON.stringify({ modelMenu: true, composerSend: true, reply: 'UI_RENDER_OK', reloadResume: true, uncaughtExceptions: exceptions, embeddedFrontend: true }, null, 2));
     return true;
   } finally {
+    if(socket?.readyState===WebSocket.OPEN) socket.send(JSON.stringify({id:2147483647,method:'Browser.close'}));
     for (const request of pending.values()) request.reject(Error('测试浏览器已关闭'));
     socket?.close();
     if (browser.exitCode === null && browser.pid) {
-      const killed = spawn('taskkill', ['/PID', String(browser.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' });
-      await new Promise(resolve => killed.once('exit', resolve));
+      await new Promise(resolve=>{const timer=setTimeout(resolve,2000);browser.once('exit',()=>{clearTimeout(timer);resolve()})});
+      if(browser.exitCode===null) browser.kill('SIGKILL');
     }
   }
 }
