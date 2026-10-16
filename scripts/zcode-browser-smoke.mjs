@@ -5,7 +5,7 @@ import { writeFile } from 'node:fs/promises';
 import net from 'node:net';
 import path from 'node:path';
 
-export async function checkZcodeBrowser({ base, token, sessionName, root, cold = false, startPlanFixture }) {
+export async function checkZcodeBrowser({ base, token, sessionName, root, cold = false, startPlanFixture, parityImageSession, parityUsage, onBrowser }) {
   const executable = process.env.VELATERM_TEST_BROWSER;
   if (!executable) return false;
   const reserve = net.createServer();
@@ -15,6 +15,7 @@ export async function checkZcodeBrowser({ base, token, sessionName, root, cold =
   const browser = spawn(executable, ['--headless=new', '--disable-gpu', '--no-first-run',
     `--remote-debugging-port=${port}`, `--user-data-dir=${path.join(root, cold ? 'cold-browser-profile' : 'browser-profile')}`, 'about:blank'],
   { windowsHide: true, stdio: 'ignore' });
+  onBrowser?.(browser);
   let socket;
   const pending = new Map();
   const exceptions = [];
@@ -83,13 +84,44 @@ export async function checkZcodeBrowser({ base, token, sessionName, root, cold =
       await send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
     };
     await send('Page.addScriptToEvaluateOnNewDocument', { source: `if(location.origin===${JSON.stringify(base)})sessionStorage.setItem('vlx-token',${JSON.stringify(token)});` });
-    const selectSession = async () => {
-      await until(() => evaluate(`Array.from(document.querySelectorAll('.nm')).some(n=>n.textContent===${JSON.stringify(sessionName)})`), Boolean, '独立 Zcode 会话树节点');
-      await evaluate(`Array.from(document.querySelectorAll('.nm')).find(n=>n.textContent===${JSON.stringify(sessionName)}).click()`);
+    const selectSession = async (targetName=sessionName) => {
+      await until(() => evaluate(`Array.from(document.querySelectorAll('.nm')).some(n=>n.textContent===${JSON.stringify(targetName)})`), Boolean, '独立 Zcode 会话树节点');
+      await evaluate(`Array.from(document.querySelectorAll('.nm')).find(n=>n.textContent===${JSON.stringify(targetName)}).click()`);
       await until(() => evaluate(`Boolean(document.querySelector('.sv-box textarea'))&&(${cold}||Array.from(document.querySelectorAll('.sv-chip-label')).some(n=>n.textContent.includes('gpt-4o')))`), Boolean, '模型目录和聊天输入框');
     };
     await send('Page.navigate', { url: base + '/?view=desktop' });
     await selectSession();
+    if (parityImageSession) {
+      await until(()=>evaluate(`Array.from(document.querySelectorAll('.sv-tool-head')).some(e=>e.textContent.includes('Parity native child')&&e.textContent.includes('local-fixture/gpt-4o'))`),Boolean,'原生子任务卡片和模型');
+      await evaluate(`Array.from(document.querySelectorAll('.sv-tool-head')).find(e=>e.textContent.includes('Parity native child')).click()`);
+      await until(()=>evaluate(`document.querySelector('.sv-subagent')?.innerText.includes('PARITY_CHILD_OK')&&document.querySelector('.sv-subagent')?.innerText.includes('Read')`),Boolean,'展开子任务过程');
+      let shot=await send('Page.captureScreenshot',{format:'png',captureBeyondViewport:false});
+      await writeFile(path.join(root,'zcode-native-subagent.png'),Buffer.from(shot.data,'base64'));
+      await selectSession(parityImageSession);
+      await until(()=>evaluate(`Array.from(document.querySelectorAll('.sv-msg-image')).some(e=>e.tagName==='IMG'&&e.complete&&e.naturalWidth>0)`),Boolean,'恢复后的图片可显示');
+      await until(()=>evaluate(`Array.from(document.querySelectorAll('button.sv-chip')).some(e=>/Usage|用量/.test(e.textContent))`),Boolean,'原生用量入口');
+      await evaluate(`Array.from(document.querySelectorAll('button.sv-chip')).find(e=>/Usage|用量/.test(e.textContent)).click()`);
+      await until(()=>evaluate(`/Session total|会话累计/.test(document.body.innerText)&&Array.from(document.querySelectorAll('.sv-popover section')).some(e=>/Session total|会话累计/.test(e.textContent)&&e.textContent.includes('${parityUsage?.input??120}')&&e.textContent.includes('${parityUsage?.cached??30}'))`),Boolean,'恢复后的累计用量');
+      const usageVisible = () => evaluate(`(()=>{const p=document.querySelector('.sv-popover');const r=p.getBoundingClientRect(),c=p.closest('.sv').getBoundingClientRect();return r.left>=c.left&&r.right<=c.right&&r.top>=0&&r.bottom<=innerHeight&&Array.from(p.querySelectorAll('dd')).every(e=>{const d=e.getBoundingClientRect();return d.left>=r.left&&d.right<=r.right})})()`);
+      assert(await usageVisible(),'用量弹窗及数字必须处于聊天区域可见范围');
+      shot=await send('Page.captureScreenshot',{format:'png',captureBeyondViewport:false});
+      await writeFile(path.join(root,'zcode-images-usage.png'),Buffer.from(shot.data,'base64'));
+      await send('Emulation.setDeviceMetricsOverride',{width:1100,height:800,deviceScaleFactor:1,mobile:false});
+      await until(usageVisible,Boolean,'较小窗口用量弹窗仍可读');
+      shot=await send('Page.captureScreenshot',{format:'png',captureBeyondViewport:false});
+      await writeFile(path.join(root,'zcode-images-usage-narrow.png'),Buffer.from(shot.data,'base64'));
+      await send('Input.dispatchKeyEvent',{type:'keyDown',key:'Escape',code:'Escape',windowsVirtualKeyCode:27});
+      await evaluate(`(()=>{const e=document.querySelector('.sv-box textarea');Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set.call(e,'STALL');e.dispatchEvent(new Event('input',{bubbles:true}));e.focus()})()`);
+      await send('Input.dispatchKeyEvent',{type:'keyDown',key:'Enter',code:'Enter',windowsVirtualKeyCode:13});
+      await until(()=>evaluate(`Boolean(document.querySelector('.sv-steer'))`),Boolean,'执行中图片引导入口');
+      await evaluate(`(()=>{const e=document.querySelector('.sv-box textarea');Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set.call(e,'Keep guide draft');e.dispatchEvent(new Event('input',{bubbles:true}));const d=new DataTransfer();d.items.add(new File([new Uint8Array([137,80,78,71])],'guide.png',{type:'image/png'}));document.querySelector('.sv-composer').dispatchEvent(new DragEvent('drop',{bubbles:true,dataTransfer:d}))})()`);
+      await until(()=>evaluate(`Boolean(document.querySelector('.sv-attach img'))`),Boolean,'图片已加入草稿');
+      await evaluate(`document.querySelector('.sv-steer').click()`);
+      await until(()=>evaluate(`document.querySelector('.sv-box textarea').value==='Keep guide draft'&&Boolean(document.querySelector('.sv-attach img'))&&/queue|队列/.test(document.querySelector('.sv-attach-note')?.textContent??'')`),Boolean,'拒绝带图引导后草稿与图片仍可普通发送');
+      assert.deepEqual(exceptions,[]);
+      await writeFile(path.join(root,'parity-browser-result.json'),JSON.stringify({nativeChildCard:true,childModel:true,expandChild:true,restoredImage:true,restoredUsage:true,usageVisible:true,narrowUsageVisible:true,imageGuideDraftPreserved:true,uncaughtExceptions:exceptions},null,2));
+      return true;
+    }
     await evaluate(`(${cold}?document.querySelector('button.sv-chip'):Array.from(document.querySelectorAll('button.sv-chip')).find(n=>n.textContent.includes('gpt-4o'))).click()`);
     await until(() => evaluate(`Array.from(document.querySelectorAll('.sv-chip-box [role="option"]')).some(row=>row.textContent.includes('gpt-4o'))`), Boolean, '展开模型菜单并显示原生模型');
     assert(await evaluate(`Array.from(document.querySelectorAll('.sv-chip-box [role="option"]')).some(row=>row.textContent.includes('gpt-4o')&&row.textContent.includes('Local fixture'))`), '模型菜单应显示原生供应商名称');

@@ -358,7 +358,20 @@ export const chatAuthLogout = (sessionId: string) => invoke<void>("chat_auth_log
 export const chatAuthSubmit = (sessionId: string, code: string) => invoke<void>("chat_auth_submit", { sessionId, code });
 export const chatAuthCancel = (sessionId: string) => invoke<void>("chat_auth_cancel", { sessionId });
 
+export interface ChatTokenUsage {
+  scope?: "session";
+  inputTokens?: number;
+  outputTokens?: number;
+  cachedInputTokens?: number;
+  cacheReadTokens?: number;
+  cacheWriteTokens?: number;
+  reasoningOutputTokens?: number;
+  reasoningTokens?: number;
+}
+
 export interface ChatExtras {
+  nativeUsage?: ChatTokenUsage;
+  turnUsage?: ChatTokenUsage;
   auth?: ChatAuthState;
   contextTokens?: number;
   contextWindow?: number;
@@ -493,6 +506,8 @@ export interface ChatSnapshot {
   /** A usage limit stopped this conversation, and it continues on its own at the time given. */
   autoContinue?: ChatAutoContinue;
   auth?: ChatAuthState;
+  nativeUsage?: ChatTokenUsage;
+  turnUsage?: ChatTokenUsage;
   /** Flattened `ChatExtras`; read them with `extrasOf`. */
   contextTokens?: number;
   contextWindow?: number;
@@ -519,6 +534,8 @@ export type ChatAutoContinueReason = "unknownReset" | "repeated" | "failed";
 /** The extras a snapshot carries, as one object. */
 export function extrasOf(snapshot: ChatSnapshot): ChatExtras {
   return {
+    nativeUsage: snapshot.nativeUsage,
+    turnUsage: snapshot.turnUsage,
     auth: snapshot.auth,
     contextTokens: snapshot.contextTokens,
     contextWindow: snapshot.contextWindow,
@@ -569,6 +586,8 @@ export type ChatEvent =
   | { type: "turnCompleted" }
   | { type: "turnInterrupted" }
   | { type: "steerAccepted" }
+  | { type: "steerPending"; turnEnded?: boolean }
+  | { type: "steerFallback"; reason?: string }
   /**
    * The process behind the conversation ended. `released` says the application let it go on purpose —
    * the view was closed, the session archived, or the engine switched — so there is nothing to report.

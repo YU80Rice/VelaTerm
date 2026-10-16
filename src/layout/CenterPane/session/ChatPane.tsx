@@ -581,6 +581,14 @@ export function ChatPane({
         case "steerAccepted":
           setActionFeedback(t("chat.steerAccepted"));
           break;
+        case "steerPending":
+          if (event.turnEnded) setNotice({text:t("chat.zcode.guideTurnEnded"),priority:"high"});
+          else setActionFeedback(t("chat.zcode.guidePending"));
+          break;
+        case "steerFallback":
+          setActionFeedback("");
+          setNotice({text:t("chat.zcode.guideQueued"),priority:"high"});
+          break;
         case "turnInterrupted":
           stopping.current = false;
           setActionFeedback(t("chat.stopped"));
@@ -1475,6 +1483,10 @@ export function ChatPane({
     }
     if (submissionReceipts !== true) {
       if (submissionReceipts === false) setError(t("chat.submission.updateRequired"));
+      return;
+    }
+    if (session.kind === "zcode" && behavior === "steer" && attachments.length > 0) {
+      setAttachNote(t("chat.zcode.imageGuideUnavailable"));
       return;
     }
     const images = attachments.map(({ mimeType, data }) => ({ mimeType, data }));
@@ -2655,7 +2667,7 @@ export function ChatPane({
               )}
               <ComposerToolbar mobile={mobile} chips={composerChips} inline={["translation", ...composerInlineChips]}
                 actions={<>
-                  {(session.kind === "claude" || session.kind === "codex") && <UsageMeter extras={extras} />}
+                  {(session.kind === "claude" || session.kind === "codex" || session.kind === "zcode") && <UsageMeter extras={extras} detailed={session.kind === "zcode"} />}
                   {busy && session.kind !== "antigravity" && (
                     <button
                       className="sv-steer"

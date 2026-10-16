@@ -8,7 +8,7 @@ import { mkdtemp, mkdir, readFile, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { checkZcodeBrowser } from './zcode-browser-smoke.mjs';
+import { checkZcodeBrowser as inspectZcodeBrowser } from './zcode-browser-smoke.mjs';
 
 if (process.platform !== 'win32') throw Error('此回归脚本验证 Windows 成品；协议单测支持其他平台。');
 const exe = process.env.VELATERM_TEST_EXE;
@@ -109,13 +109,22 @@ const modelServer = createServer(async (request, response) => {
   const body = JSON.parse(raw);
   // 原生 CLI 会插入合成 user 消息；按最后一个测试指令选分支，避免历史工具请求污染新回合。
   const text = body.messages.filter(message => message.role === 'user').map(message => JSON.stringify(message.content))
-    .findLast(text => /UI_RENDER_TEST|ALPHA|BETA|WRITE|DENIAL|PLAN_REVIEW|EXTENSION_(?:PLUGIN_MCP|MCP|SKILL)|STALL/.test(text)) ?? '';
+    .findLast(text => /PARITY_(?:IMAGE|STEER_ROOT|NO_TOOL|GUIDE|AGENT_ROOT|AGENT_BACKGROUND|CHILD)|UI_RENDER_TEST|ALPHA|BETA|WRITE|DENIAL|PLAN_REVIEW|EXTENSION_(?:PLUGIN_MCP|MCP|SKILL)|STALL/.test(text)) ?? '';
+  if (text.includes('PARITY_IMAGE')) {
+    const urls=body.messages.filter(message=>message.role==='user').flatMap(message=>Array.isArray(message.content)?message.content:[])
+      .filter(part=>part.type==='image_url').map(part=>part.image_url.url);
+    assert(urls.includes('data:image/png;base64,'+parityImage), '原生模型请求必须收到原始图片字节: '+JSON.stringify(body.messages.filter(m=>m.role==='user').map(m=>typeof m.content==='string'?'text':m.content.map(p=>({type:p.type,url:p.image_url?.url?.slice(0,120),text:p.text?.slice(0,350)})))));
+  }
   response.writeHead(200, { 'Content-Type': 'text/event-stream' });
   if (text.includes('STALL')) { response.write(': waiting\n\n'); return; }
   const base = { id: 'chatcmpl-fixture', object: 'chat.completion.chunk', created: 1, model: 'gpt-4o' };
   const chunk = (delta, finish_reason = null) => response.write('data: ' + JSON.stringify({ ...base, choices: [{ index: 0, delta, finish_reason }] }) + '\n\n');
   if (!body.messages.some(message => message.role === 'tool')) {
     let tool;
+    if (text.includes('PARITY_STEER_ROOT')) tool={name:'Bash',arguments:{command:'sleep 3',description:'guide checkpoint'}};
+    if (text.includes('PARITY_AGENT_BACKGROUND')) tool={name:'Agent',arguments:{subagent_type:'general-purpose',run_in_background:true,description:'Parity background child',prompt:'PARITY_CHILD: read parity-child.txt and report PARITY_CHILD_OK'}};
+    if (text.includes('PARITY_AGENT_ROOT')) tool={name:'Agent',arguments:{subagent_type:'general-purpose',description:'Parity native child',prompt:'PARITY_CHILD: read parity-child.txt and report PARITY_CHILD_OK'}};
+    if (text.includes('PARITY_CHILD')) tool={name:'Read',arguments:{file_path:path.join(workspace,'parity-child.txt')}};
     if (text.includes('WRITE')) tool = { name: 'Write', arguments: { file_path: path.join(workspace, 'written.txt'), content: 'WRITE_OK' } };
     if (text.includes('DENIAL')) tool = { name: 'Bash', arguments: { command: 'printf DENIED > blocked.txt', description: '权限拒绝测试' } };
     if (text.includes('PLAN_REVIEW')) tool = { name: 'ExitPlanMode', arguments: { plan: '实现经过批准的计划。' } };
@@ -133,17 +142,19 @@ const modelServer = createServer(async (request, response) => {
   }
   const extension = text.includes('EXTENSION_SKILL') ? 'EXTENSION_SKILL_CONTENT_OK' : text.includes('EXTENSION_PLUGIN_MCP') ? 'EXTENSION_PLUGIN_MCP_CONTENT_OK' : text.includes('EXTENSION_MCP') ? 'EXTENSION_MCP_CONTENT_OK' : null;
   if (extension) assert(body.messages.some(message => message.role === 'tool' && JSON.stringify(message.content).includes(extension)), '必须收到实际技能/MCP 执行结果');
-  const textResult = extension ?? (text.includes('UI_RENDER_TEST') ? 'UI_RENDER_OK' : text.includes('ALPHA') ? 'ALPHA_RESULT' : text.includes('BETA') ? 'BETA_RESULT' : 'FIXTURE_RESULT');
+  if (text.includes('PARITY_CHILD')) await delay(1500);
+  if (text.includes('PARITY_NO_TOOL')) {await writeFile(path.join(root,'guide-no-tool-started'),'ready');await delay(3000);}
+  const textResult = text.includes('PARITY_AGENT_BACKGROUND') ? 'PARITY_BACKGROUND_OK' : text.includes('PARITY_GUIDE') ? 'PARITY_STEER_OK' : text.includes('PARITY_CHILD') ? 'PARITY_CHILD_OK' : text.includes('PARITY_AGENT_ROOT') ? 'PARITY_AGENT_OK' : extension ?? (text.includes('PARITY_IMAGE') ? 'PARITY_IMAGE_OK' : text.includes('UI_RENDER_TEST') ? 'UI_RENDER_OK' : text.includes('ALPHA') ? 'ALPHA_RESULT' : text.includes('BETA') ? 'BETA_RESULT' : 'FIXTURE_RESULT');
   chunk({ role: 'assistant', content: textResult.slice(0, 5) });
   chunk({ content: textResult.slice(5) });
-  chunk({}, 'stop'); response.end('data: [DONE]\n\n');
+  chunk({}, 'stop'); response.write('data: '+JSON.stringify({...base,choices:[],usage:{prompt_tokens:120,completion_tokens:12,total_tokens:132,prompt_tokens_details:{cached_tokens:30},completion_tokens_details:{reasoning_tokens:2}}})+'\n\n'); response.end('data: [DONE]\n\n');
 });
 await new Promise(resolve => modelServer.listen(0, '127.0.0.1', resolve));
 await writeFile(path.join(nativeRoot, '.zcode/v2/provider_config.json'), JSON.stringify({ schemaVersion: 1, config: {
   providerConfigRules: { providerRules: [{ providerId: 'local-fixture', providerName: 'Local fixture', enabled: true, config: {
     group: 'standard-personal', access: { type: 'api-key', apiKey: 'fixture-only' },
     api: { type: 'openai-chat-completions', baseUrl: `http://127.0.0.1:${modelServer.address().port}/v1` }, personalModelIds: ['gpt-4o', 'gpt-4o-mini'], visibility: 'visible',
-  } }] }, modelConfigRules: { providerModelRules: [], manualProviderModelRules: [] }, defaultModelSelection: { providerId: 'local-fixture', modelId: 'gpt-4o' },
+  } }] }, modelConfigRules: { providerModelRules: [{providerId:'local-fixture',modelId:'gpt-4o',config:{properties:{contextWindow:128000,inputFormat:{supportsImage:true}}}}], manualProviderModelRules: [] }, defaultModelSelection: { providerId: 'local-fixture', modelId: 'gpt-4o' },
 } }));
 const reservation = net.createServer();
 await new Promise(resolve => reservation.listen(0, '127.0.0.1', resolve));
@@ -156,12 +167,31 @@ const app = spawn(exe, ['--serve', '--local-http', '--port', String(port), '--da
 let socket;
 const sessions = [];
 let call;
+const ownedProcesses = new Set([app]);
+const checkZcodeBrowser = options => inspectZcodeBrowser({ ...options, onBrowser: browser => ownedProcesses.add(browser) });
+let outcome;
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
+const bounded = (promise, ms, label) => {
+  let timer;
+  return Promise.race([promise, new Promise((_, reject) => { timer = setTimeout(() => reject(Error(label)), ms); })])
+    .finally(() => clearTimeout(timer));
+};
+const stopOwnedProcess = async child => {
+  if (!child.pid || child.exitCode !== null || child.signalCode !== null) return;
+  const killer = spawn(path.join(process.env.SystemRoot ?? 'C:/Windows', 'System32/taskkill.exe'), ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+  let report='';
+  for (const stream of [killer.stdout,killer.stderr]) stream.on('data',bytes=>{report=(report+bytes.toString()).slice(-2048);});
+  await bounded(new Promise((resolve, reject) => { killer.once('exit', resolve); killer.once('error', reject); }), 15000, '测试进程树停止超时');
+  if (child.exitCode === null && child.signalCode === null) await bounded(new Promise(resolve => child.once('exit', resolve)), 5000, `测试进程未退出 ${child.pid}: ${report}`);
+};
+const parityImage = 'iVBORw0KGgoAAAANSUhEUgAAAAQAAAAECAIAAAAmkwkpAAAAE0lEQVR4nGPUqDjBAANMcBZeDgBGtAFwfeO9fAAAAABJRU5ErkJggg==';
 const until = async (read, accept, label, timeout = 45000) => {
   const end = Date.now() + timeout;
-  while (Date.now() < end) { const value = await read(); if (accept(value)) return value; await delay(100); }
-  throw Error(label + ' 超时');
+  let last;
+  while (Date.now() < end) { last = await read(); if (accept(last)) return last; await delay(100); }
+  throw Error(label + ' 超时 '+JSON.stringify({extras:{nativeUsage:last?.nativeUsage,turnUsage:last?.turnUsage,contextTokens:last?.contextTokens,contextWindow:last?.contextWindow},rows:last?.rows?.map(r=>({kind:r.kind,name:r.name,status:r.status,error:r.kind==='error'?r.message:undefined})),permissions:last?.permissions?.length}));
 };
+async function exercise() {
 try {
   const base = `http://127.0.0.1:${port}`;
   await until(async () => { try { return (await fetch(base + '/api/mode', { signal: AbortSignal.timeout(500) })).ok; } catch { return false; } }, Boolean, '后端启动');
@@ -172,8 +202,10 @@ try {
   await new Promise((resolve, reject) => { socket.addEventListener('open', resolve, { once: true }); socket.addEventListener('error', reject, { once: true }); });
   let sequence = 0;
   const pending = new Map();
+  const guideEvents = [];
   socket.addEventListener('message', event => {
     const frame = JSON.parse(event.data);
+    if (frame.t === 'event' && ['steerPending','steerAccepted','steerFallback'].includes(frame.payload?.type)) guideEvents.push({name:frame.name,...frame.payload});
     if (frame.t !== 'reply') return;
     const request = pending.get(frame.id);
     if (!request) return;
@@ -199,6 +231,94 @@ try {
     await until(() => call('chat_snapshot', { sessionId: session.id }), snapshot => snapshot.model === 'local-fixture/gpt-4o', '原生模型就绪');
     return session.id;
   };
+  const parityCheck=async()=>{
+  await writeFile(path.join(workspace,'parity-child.txt'),'PARITY_CHILD_READ_BYTES');
+  const imageSession=await create();
+  let imageSentAgain=false;
+  await call('chat_send',{sessionId:imageSession,text:'PARITY_IMAGE',images:[{mimeType:'image/png',data:parityImage}]});
+  await until(()=>call('chat_snapshot',{sessionId:imageSession}),snapshot=>snapshot.rows.some(row=>row.kind==='assistant'&&row.text==='PARITY_IMAGE_OK'),'图片到达原生模型');
+  if (!process.env.ZCODE_PARITY_ONLY || ['all','usage'].includes(process.env.ZCODE_PARITY_ONLY)) {
+    const liveUsage=await until(()=>call('chat_snapshot',{sessionId:imageSession}),s=>!s.turnStartedAt&&s.turnUsage?.outputTokens===12,'当前回合用量');
+    assert.equal(liveUsage.turnUsage.inputTokens,120);assert.equal(liveUsage.turnUsage.cacheReadTokens,30);
+  }
+  await call('chat_stop',{sessionId:imageSession});
+  await call('chat_start',{sessionId:imageSession,fastMode:false});
+  const restoredImage=await until(()=>call('chat_snapshot',{sessionId:imageSession}),snapshot=>snapshot.rows.some(row=>row.kind==='user'&&row.text==='PARITY_IMAGE'&&row.images.length),'恢复原生图片历史');
+  const imageRef=restoredImage.rows.find(row=>row.kind==='user'&&row.text==='PARITY_IMAGE').images[0];
+  const imageBytes=await call('chat_attachment',{sessionId:imageSession,attachmentId:imageRef.attachmentId});
+  assert.equal(imageBytes.data,parityImage); assert.equal(imageBytes.mimeType,'image/png');
+  if (!process.env.ZCODE_PARITY_ONLY || process.env.ZCODE_PARITY_ONLY==='all' || process.env.ZCODE_PARITY_ONLY==='usage') {
+  const imageUsage=await until(()=>call('chat_snapshot',{sessionId:imageSession}),s=>s.nativeUsage?.inputTokens===120&&s.contextWindow===128000,'原生会话用量');
+  assert.equal(imageUsage.nativeUsage.outputTokens,12);
+  assert.equal(imageUsage.nativeUsage.cachedInputTokens,30);
+  assert.equal(imageUsage.contextWindow,128000);
+  assert.equal(imageUsage.totalCostUsd,undefined,'不能编造美元费用');
+  await call('chat_send',{sessionId:imageSession,text:'PARITY_IMAGE_AGAIN'});
+  const resumedUsage=await until(()=>call('chat_snapshot',{sessionId:imageSession}),s=>!s.turnStartedAt&&s.nativeUsage?.inputTokens===240,'恢复后累计应包含两个真实请求');
+  assert.equal(resumedUsage.nativeUsage.outputTokens,24);assert.equal(resumedUsage.nativeUsage.cachedInputTokens,60);
+  imageSentAgain=true;
+  }
+  if (!process.env.ZCODE_PARITY_ONLY || process.env.ZCODE_PARITY_ONLY==='all' || process.env.ZCODE_PARITY_ONLY==='steer') {
+    const steering=await create();
+    await call('chat_set_mode',{sessionId:steering,mode:'yolo'});
+    await call('chat_send',{sessionId:steering,text:'PARITY_STEER_ROOT'});
+    const active=await until(()=>call('chat_snapshot',{sessionId:steering}),s=>s.rows.some(r=>r.kind==='tool'&&r.name==='Bash'&&r.status==='running'),'原生 guide 检查点');
+    await assert.rejects(call('chat_send',{sessionId:steering,text:'PARITY_GUIDE_IMAGE',behavior:'steer',images:[{mimeType:'image/png',data:parityImage}]}),/图片.*排队/);
+    assert.equal(await call('chat_send',{sessionId:steering,text:'PARITY_GUIDE',behavior:'steer'}),'steered');
+    const accepted=await call('chat_snapshot',{sessionId:steering});
+    assert.equal(accepted.turnStartedAt,active.turnStartedAt,'guide 不能创建替代回合');
+    assert.equal(accepted.queue?.length??0,0);
+    assert.equal(await call('chat_send',{sessionId:steering,text:'PARITY_IMAGE_QUEUE',behavior:'queue',images:[{mimeType:'image/png',data:parityImage}]}),'queued');
+    const queued=await call('chat_snapshot',{sessionId:steering});assert.equal(queued.queue[0].images[0].mimeType,'image/png');
+    const done=await until(()=>call('chat_snapshot',{sessionId:steering}),s=>!s.turnStartedAt&&s.rows.some(r=>r.kind==='assistant'&&r.text==='PARITY_STEER_OK')&&s.rows.some(r=>r.kind==='assistant'&&r.text==='PARITY_IMAGE_OK'),'guide 生效且排队图片没有丢失');
+    assert.equal(done.rows.filter(r=>r.kind==='user'&&r.text==='PARITY_GUIDE').length,1);
+    assert(guideEvents.some(e=>e.name.endsWith('/'+steering)&&e.type==='steerAccepted'),'实际工具边界采用 guide 后才报告成功');
+    const noTool=await create();
+    await call('chat_send',{sessionId:noTool,text:'PARITY_NO_TOOL'});
+    await until(async()=>{try{await readFile(path.join(root,'guide-no-tool-started'));return true;}catch{return false;}},Boolean,'无工具边界模型正在生成');
+    const noToolActive=await call('chat_snapshot',{sessionId:noTool});
+    assert.equal(await call('chat_send',{sessionId:noTool,text:'PARITY_GUIDE_NO_TOOL',behavior:'steer'}),'steered');
+    await until(()=>Promise.resolve(guideEvents),events=>events.some(e=>e.name.endsWith('/'+noTool)&&e.type==='steerAccepted'),'原生可在纯文本步骤边界采用 guide');
+    const inlineDone=await until(()=>call('chat_snapshot',{sessionId:noTool}),s=>!s.turnStartedAt&&s.rows.some(r=>r.kind==='assistant'&&r.text==='PARITY_STEER_OK'),'纯文本步骤采用引导');
+    assert(!guideEvents.some(e=>e.name.endsWith('/'+noTool)&&e.type==='steerFallback'));
+    await rm(path.join(root,'guide-no-tool-started'));
+    const interruptedGuide=await create();
+    await call('chat_send',{sessionId:interruptedGuide,text:'PARITY_NO_TOOL_INTERRUPT'});
+    await until(async()=>{try{await readFile(path.join(root,'guide-no-tool-started'));return true;}catch{return false;}},Boolean,'中断测试的模型正在生成');
+    assert.equal(await call('chat_send',{sessionId:interruptedGuide,text:'PARITY_GUIDE_INTERRUPTED',behavior:'steer'}),'steered');
+    await call('chat_interrupt',{sessionId:interruptedGuide});
+    await until(()=>Promise.resolve(guideEvents),events=>events.some(e=>e.name.endsWith('/'+interruptedGuide)&&e.type==='steerFallback'&&e.reason==='guide.turnInterrupted'),'原生中断导致 guide 降级必须明确报告');
+    assert(!guideEvents.some(e=>e.name.endsWith('/'+interruptedGuide)&&e.type==='steerAccepted'),'不能把排队降级报告为当前回合引导成功');
+  }
+  if (!process.env.ZCODE_PARITY_ONLY || process.env.ZCODE_PARITY_ONLY==='all' || process.env.ZCODE_PARITY_ONLY==='subagent') {
+    const parentAgent=await create();
+    await call('chat_set_mode',{sessionId:parentAgent,mode:'yolo'});
+    await call('chat_send',{sessionId:parentAgent,text:'PARITY_AGENT_ROOT'});
+    const childCard=await until(()=>call('chat_snapshot',{sessionId:parentAgent}),s=>s.rows.some(r=>r.kind==='tool'&&r.name==='Agent'&&r.subagent?.model==='local-fixture/gpt-4o'&&r.childCount>0),'原生子任务过程可见');
+    const preview=childCard.rows.find(r=>r.kind==='tool'&&r.name==='Agent');
+    const detail=await until(()=>call('chat_row',{sessionId:parentAgent,rowId:preview.id}),r=>r.children.some(c=>c.kind==='tool'&&c.name==='Read'&&c.status==='completed'&&c.output?.includes('PARITY_CHILD_READ_BYTES')),'子工具结果已投影');
+    assert(detail.children.some(c=>c.kind==='tool'&&c.name==='Read'),'展开卡片应取得真实子工具');
+    const childRead=detail.children.find(c=>c.kind==='tool'&&c.name==='Read');
+    assert.equal(childRead.input.file_path,path.join(workspace,'parity-child.txt'));
+    assert(childRead.output.includes('PARITY_CHILD_READ_BYTES'),'过程卡片应显示实际子工具结果');
+    assert(!childCard.rows.some(r=>r.kind==='tool'&&r.name==='Read'),'子任务不能混入主时间线');
+    await until(()=>call('chat_snapshot',{sessionId:parentAgent}),s=>!s.turnStartedAt&&s.rows.some(r=>r.kind==='assistant'&&r.text==='PARITY_AGENT_OK'),'原生子任务完成');
+    await call('chat_stop',{sessionId:parentAgent});
+    await call('chat_start',{sessionId:parentAgent,fastMode:false});
+    const restoredChild=await until(()=>call('chat_snapshot',{sessionId:parentAgent}),s=>s.rows.some(r=>r.kind==='tool'&&r.name==='Agent'&&r.childCount>1),'恢复原生子任务历史');
+    const restoredDetail=await call('chat_row',{sessionId:parentAgent,rowId:restoredChild.rows.find(r=>r.kind==='tool'&&r.name==='Agent').id});
+    assert(restoredDetail.children.some(c=>c.kind==='assistant'&&c.text==='PARITY_CHILD_OK'));
+    const background=await create();
+    await call('chat_set_mode',{sessionId:background,mode:'yolo'});
+    await call('chat_send',{sessionId:background,text:'PARITY_AGENT_BACKGROUND'});
+    const rootDone=await until(()=>call('chat_snapshot',{sessionId:background}),s=>!s.turnStartedAt&&s.rows.some(r=>r.kind==='assistant'&&r.text==='PARITY_BACKGROUND_OK'),'父回合先于后台子任务结束');
+    await until(()=>call('chat_snapshot',{sessionId:background}),s=>!s.turnStartedAt&&s.rows.some(r=>r.kind==='tool'&&r.name==='Agent'&&r.status==='running'),'父工具返回后，后台子任务卡片仍须显示运行中',1000);
+    await until(()=>call('chat_snapshot',{sessionId:background}),s=>s.rows.some(r=>r.kind==='tool'&&r.name==='Agent'&&r.status==='completed'&&r.childCount>1),'后台子任务终态');
+    const parityTree=await call('list_tree');
+    await checkZcodeBrowser({base,token,root,sessionName:parityTree.sessions.find(s=>s.id===parentAgent).name,parityImageSession:parityTree.sessions.find(s=>s.id===imageSession).name,parityUsage:{input:imageSentAgain?240:120,cached:imageSentAgain?60:30}});
+  }
+  };
+  if (process.env.ZCODE_PARITY_ONLY) {await parityCheck();outcome={parity:process.env.ZCODE_PARITY_ONLY,passed:true};return;}
   // 空白会话尚无 CLI 进程：必须先能选择模型，不能先发送消息才能解锁菜单。
   const cold = await create(false);
   const coldCommands = await call('chat_commands', { sessionId: cold });
@@ -220,6 +340,7 @@ try {
   await call('chat_stop', { sessionId: cold });
   assert((await call('chat_models', { sessionId: cold })).some(model => model.id === 'local-fixture/gpt-4o-mini'), '停止后已有会话仍须提供模型菜单');
   assert.equal((await call('list_tree')).sessions.find(session => session.id === cold).agentSessionId, coldNative, '查询不能改写已保存的原生会话 ID');
+  await parityCheck();
   const finished = sessionId => until(() => call('chat_snapshot', { sessionId }), snapshot => !snapshot.turnStartedAt && snapshot.rows.some(row => row.kind === 'assistant' && !row.streaming), '原生回合结束');
   const [alpha, beta] = await Promise.all([create(), create()]);
   await Promise.all([call('chat_send', { sessionId: alpha, text: 'ALPHA' }), call('chat_send', { sessionId: beta, text: 'BETA' })]);
@@ -329,6 +450,7 @@ try {
   const loginHelper = spawn(bin, ['login', 'bigmodel', 'start-plan', '--no-browser', '--json'], { cwd: workspace,
     windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'], env: { ...process.env, USERPROFILE: profile,
       ZCODE_DATA_BASE_DIR: nativeRoot, ZCODE_ENDPOINT_ORIGIN: `http://127.0.0.1:${modelServer.address().port}` } });
+  ownedProcesses.add(loginHelper);
   loginHelper.stdout.resume();
   assert.equal(await new Promise((resolve, reject) => { const timer = setTimeout(() => { loginHelper.kill(); reject(Error('Start Plan 登录夹具超时')); }, 45000);
     loginHelper.on('error', reject); loginHelper.once('exit', code => { clearTimeout(timer); resolve(code); }); }), 0, '只有 Start Plan 时也必须通过原生 CLI 登录');
@@ -361,14 +483,17 @@ try {
   await call('chat_send', { sessionId: startPlan, text: 'EXHAUSTED_START_PLAN' }).catch(() => {});
   await delay(1500);
   assert.equal(startPlanRequests, 1); assert.equal(generationRequests, generationBeforeExhaustedSend, '额度耗尽不能自动回退到第三方模型');
-  const result = { nativeSkillCatalogue: true, nativeSkillTool: true, nativeMcpTool: true, nativePluginMcpTool: true, nativeMcpFailureAndDisabled: true, slowMcpDoesNotBlockChat: true, appVersion: expectedVersion, coldModelCatalogue: true, coldModelSelection: true, stoppedModelCatalogue: true, coldBrowserUI, nativeConcurrentSessions: true, nativeResume: true, offlineHistory: true, permissionDenial: true, permissionReannouncement: true, pendingInteractionCancellation: true, writeToolAndArguments: true, planApproval: true, interrupt: true, browserUI, startPlanBrowserUI, startPlanPending: true, startPlanJwtRequest: true, startPlanQuotaUpdated: true, startPlanNoFallback: true, zcodeGuiUsed: false, productionAccountAuthorization: false };
+  const result = { nativeImages: true, nativeImageHistory: true, nativeGuide: true, nativeGuideImageRejection: true, nativeSubagentProjection: true, nativeUsage: true, nativeSkillCatalogue: true, nativeSkillTool: true, nativeMcpTool: true, nativePluginMcpTool: true, nativeMcpFailureAndDisabled: true, slowMcpDoesNotBlockChat: true, appVersion: expectedVersion, coldModelCatalogue: true, coldModelSelection: true, stoppedModelCatalogue: true, coldBrowserUI, nativeConcurrentSessions: true, nativeResume: true, offlineHistory: true, permissionDenial: true, permissionReannouncement: true, pendingInteractionCancellation: true, writeToolAndArguments: true, planApproval: true, interrupt: true, browserUI, startPlanBrowserUI, startPlanPending: true, startPlanJwtRequest: true, startPlanQuotaUpdated: true, startPlanNoFallback: true, zcodeGuiUsed: false, productionAccountAuthorization: false };
   await writeFile(path.join(root, 'result.json'), JSON.stringify(result, null, 2));
-  console.log(JSON.stringify({ ...result, evidence: path.join(root, 'result.json') }));
+  outcome={ ...result, evidence: path.join(root, 'result.json') };
 } finally {
-  if (call && socket?.readyState === WebSocket.OPEN) await Promise.allSettled(sessions.map(sessionId => call('chat_stop', { sessionId })));
+  if (call && socket?.readyState === WebSocket.OPEN) await bounded(Promise.allSettled(sessions.map(sessionId => call('chat_stop', { sessionId }))), 12000, '测试会话停止超时').catch(() => {});
   socket?.close();
-  const killed = spawn('taskkill', ['/PID', String(app.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' });
-  await new Promise(resolve => killed.once('exit', resolve));
+  for (const child of ownedProcesses) await stopOwnedProcess(child);
   modelServer.closeAllConnections();
-  await new Promise(resolve => modelServer.close(resolve));
+  await bounded(new Promise(resolve => modelServer.close(resolve)), 5000, '本地模型测试服务停止超时');
 }
+
+}
+await exercise();
+console.log(JSON.stringify({ ...outcome, cleanupVerified: true }));

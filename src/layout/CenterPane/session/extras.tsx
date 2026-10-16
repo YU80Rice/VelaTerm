@@ -49,13 +49,35 @@ function contextOf(extras: ChatExtras): { used: number; max: number; percentage:
   return null;
 }
 
+function NativeUsageDetails({extras}: {extras: ChatExtras}) {
+  const t=useT();
+  const fields=(usage: ChatExtras["nativeUsage"]) => [
+    [t("chat.usage.input"),usage?.inputTokens],
+    [t("chat.usage.output"),usage?.outputTokens],
+    [t("chat.usage.cached"),usage?.cachedInputTokens ?? usage?.cacheReadTokens],
+    [t("chat.usage.cacheWrite"),usage?.cacheWriteTokens],
+    [t("chat.usage.reasoning"),usage?.reasoningOutputTokens ?? usage?.reasoningTokens],
+  ] as const;
+  const context=contextOf(extras);
+  return <ChipPopover glyph={<span aria-hidden="true">◔</span>} label={t("chat.usage.label")} title={t("chat.usage.label")} width={300} fitViewport containInPane>
+    <div style={{padding:12}}>
+      <p>{context ? t("chat.usage.context",formatTokens(context.used),formatTokens(context.max),Math.round(context.percentage)) : t("chat.usage.unknown")}</p>
+      {([[t("chat.usage.turn"),extras.turnUsage],[t("chat.usage.session"),extras.nativeUsage]] as const).map(([label,usage])=><section key={label}>
+        <strong>{label}</strong>
+        {usage ? <dl>{fields(usage).filter(([,value])=>typeof value==="number").map(([name,value])=><div key={name} style={{display:"flex",justifyContent:"space-between",gap:16}}><dt>{name}</dt><dd style={{margin:0,fontVariantNumeric:"tabular-nums"}}>{value!.toLocaleString()}</dd></div>)}</dl> : <p>{t("chat.usage.notReported")}</p>}
+      </section>)}
+    </div>
+  </ChipPopover>;
+}
+
 /**
  * A ring that fills as the context window does, with the exact figures and the running cost in its
  * tooltip. Nothing is drawn until the agent has reported a first figure.
  */
-export function UsageMeter({ extras }: { extras: ChatExtras }) {
+export function UsageMeter({ extras, detailed = false }: { extras: ChatExtras; detailed?: boolean }) {
   const t = useT();
   const context = contextOf(extras);
+  if (detailed) return <NativeUsageDetails extras={extras} />;
   if (!context) return null;
   const pct = Math.max(0, Math.min(100, context.percentage));
   const warning = extras.rateLimit?.status === "allowed_warning";
@@ -145,6 +167,7 @@ export function ChipPopover({
   badge,
   width = 300,
   fitViewport = true,
+  containInPane = false,
   disabled = false,
   children,
   onOpen,
@@ -155,6 +178,7 @@ export function ChipPopover({
   badge?: ReactNode;
   width?: number;
   fitViewport?: boolean;
+  containInPane?: boolean;
   disabled?: boolean;
   children: ReactNode;
   onOpen?: () => void;
@@ -172,9 +196,12 @@ export function ChipPopover({
     window.addEventListener("resize", resize);
     return () => window.removeEventListener("resize", resize);
   }, [open, fitViewport]);
-  const panelWidth = fitViewport ? Math.min(width, Math.max(0, viewportWidth - 16)) : width;
+  const pane = containInPane ? boxRef.current?.closest(".sv")?.getBoundingClientRect() : null;
+  const visibleLeft = Math.max(8, (pane?.left ?? 0) + 8);
+  const visibleRight = Math.min(viewportWidth - 8, (pane?.right ?? viewportWidth) - 8);
+  const panelWidth = fitViewport ? Math.min(width, Math.max(0, visibleRight - visibleLeft)) : width;
   const anchorLeft = boxRef.current?.getBoundingClientRect().left ?? 0;
-  const panelLeft = fitViewport ? Math.max(8 - anchorLeft, Math.min(0, viewportWidth - anchorLeft - panelWidth - 8)) : 0;
+  const panelLeft = fitViewport ? Math.max(visibleLeft - anchorLeft, Math.min(0, visibleRight - anchorLeft - panelWidth)) : 0;
   useEffect(() => {
     if (!open) return;
     onOpen?.();

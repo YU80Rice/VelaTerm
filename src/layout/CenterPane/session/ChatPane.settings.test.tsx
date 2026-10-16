@@ -881,6 +881,33 @@ it.each(["chat_start", "chat_send"])("keeps the failed message without overwriti
   expect(screen.getByText("Error: Submission failed")).toBeTruthy();
 });
 
+it("keeps a rejected Zcode image guide in the composer for normal queueing", async () => {
+  const { container } = await mountPane("zcode");
+  act(() => useTermStore.setState({ runtimes: { s: { status: "running", agent: "zcode", agentState: "working" } } }));
+  const input = container.querySelector<HTMLTextAreaElement>(".sv-box textarea")!;
+  fireEvent.change(input, { target: { value: "Keep this image" } });
+  fireEvent.drop(container.querySelector(".sv-composer")!, { dataTransfer: { files: [new File(["png"], "example.png", { type: "image/png" })] } });
+  await screen.findByAltText("example.png");
+  fireEvent.click(screen.getByRole("button", { name: "Steer" }));
+  expect(input.value).toBe("Keep this image");
+  expect(container.querySelector(".sv-attach img")).toBeTruthy();
+  expect(vi.mocked(invoke).mock.calls.filter(([command]) => command === "chat_send")).toHaveLength(0);
+  fireEvent.keyDown(input, { key: "Enter" });
+  await waitFor(() => expect(invoke).toHaveBeenCalledWith("chat_send", expect.objectContaining({ behavior: "queue", text: "Keep this image", images: [{mimeType:"image/png",data:"cG5n"}] })));
+});
+
+it("shows native guide admission and keeps a fallback notice across the next turn", async () => {
+  await mountPane("zcode");
+  act(() => eventCallback({type:"steerPending"}));
+  expect(screen.getByText("Guide request submitted; waiting for a native execution boundary.")).toBeTruthy();
+  act(() => eventCallback({type:"steerFallback",reason:"guide.noToolBoundary"}));
+  act(() => eventCallback({type:"turnStarted",startedAt:123}));
+  expect(screen.getByText("Zcode could not apply the guide in the current turn and queued it for a later turn. Do not resend it.")).toBeTruthy();
+  expect(screen.queryByText("Guide request submitted; waiting for a native execution boundary.")).toBeNull();
+  act(() => eventCallback({type:"steerPending",turnEnded:true}));
+  expect(screen.getByText("The original turn ended while the guide was being admitted. Zcode has received the input; wait for its actual reply and do not resend.")).toBeTruthy();
+});
+
 it("restores steering attachments on failure and clears them on retry", async () => {
   const { container } = await mountPane("codex");
   act(() => useTermStore.setState({ runtimes: { s: { status: "running", agent: "codex", agentState: "working" } } }));

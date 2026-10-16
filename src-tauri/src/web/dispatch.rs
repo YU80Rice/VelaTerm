@@ -1612,13 +1612,19 @@ mod tests {
     fn chat_mcp_commands_reach_the_agent_manager() {
         let app = test_ctx();
         let data_dir = app.data_dir().unwrap();
+        let session = {
+            let conn = app.db().conn.lock().unwrap();
+            let project = crate::db::repo::create_virtual_project(&conn, "MCP dispatch").unwrap();
+            crate::db::repo::create_session(&conn, &project.id, None, "MCP probe", crate::models::SessionKind::Claude,
+                None, None, None, None, None).unwrap()
+        };
         for cmd in ["chat_mcp_status", "chat_mcp_toggle", "chat_mcp_reconnect"] {
             // Missing parameters must fail validation rather than fall through as an unknown command.
             let error = dispatch(&app, cmd, &json!({}), DESKTOP_SOURCE, CallOrigin::Local).unwrap_err();
             assert_eq!(error, "Missing string parameter sessionId", "{cmd}");
             let error = dispatch(
                 &app, cmd,
-                &json!({ "sessionId": "mcp-probe", "server": "local-tools", "enabled": false }),
+                &json!({ "sessionId": session.id, "server": "local-tools", "enabled": false }),
                 DESKTOP_SOURCE, CallOrigin::Local,
             ).unwrap_err();
             assert_eq!(error, "This session has no running agent", "{cmd}");

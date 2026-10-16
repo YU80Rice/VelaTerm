@@ -829,6 +829,9 @@ pub struct ClaudeExtras {
     /// Numeric, provider-reported cumulative token counters for background workflow accounting.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub native_usage: Option<Value>,
+    /// 原生当前回合的已结算用量，与会话累计分开。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub turn_usage: Option<Value>,
     #[serde(skip)]
     generation: generation::GenerationTiming,
     /// Context the last API call carried: input plus cache reads and cache writes.
@@ -2615,7 +2618,7 @@ impl ChatManager {
     pub fn context_info(&self, session_id: &str) -> Option<crate::agent::transcript::AgentContextInfo> {
         let proc = self.sessions.lock().unwrap().get(session_id).cloned()?;
         // Codex reports the same two numbers through `thread/tokenUsage/updated`, into the same fields.
-        if !matches!(proc.kind, SessionKind::Claude | SessionKind::Codex) {
+        if !matches!(proc.kind, SessionKind::Claude | SessionKind::Codex | SessionKind::Zcode) {
             return None;
         }
         let extras = proc.extras.lock().unwrap().clone();
@@ -5656,7 +5659,6 @@ fn dispatch_steer(
     message_id: Option<&str>,
 ) -> Result<(), String> {
     if app.chat().closing.load(Ordering::Relaxed) { return Err("The application is shutting down.".into()); }
-    if proc.kind == SessionKind::Zcode { return Err("当前 Zcode 原生会话入口不支持 steer，请使用排队或中断后发送".into()); }
     if proc.kind == SessionKind::Antigravity {
         super::antigravity_protocol::validate(text, images.len(), "steer")?;
     }
@@ -5672,6 +5674,7 @@ fn dispatch_steer(
     claim_native_writer(app,proc)?;
     if let Some(id) = message_id { super::submissions::begin_dispatch(&app.db().conn.lock().unwrap(), session_id, id)?; }
     match proc.kind {
+        SessionKind::Zcode => zcode::steer(app, session_id, proc, &row_id, text, images)?,
         SessionKind::Codex => {
             let thread_id = proc.agent_session_id.lock().unwrap().clone()
                 .ok_or("Codex has not opened its thread yet")?;
@@ -5697,7 +5700,7 @@ fn dispatch_steer(
         let receipt = if proc.permissions.lock().unwrap().is_empty() { "steered" } else { "blocked" };
         super::submissions::finish_dispatch(&app.db().conn.lock().unwrap(), session_id, id, receipt)?;
     }
-    emit(app, session_id, json!({"type":"steerAccepted"}));
+    if proc.kind != SessionKind::Zcode { emit(app, session_id, json!({"type":"steerAccepted"})); }
     Ok(())
 }
 
